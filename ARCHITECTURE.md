@@ -129,7 +129,7 @@ the file names on screen all follow it, like in a shell.
 second. A new build shows up as a new inode, size or modification time.
 Once the file has stayed the same for one more check, so it isn't still
 being copied, and `--version` runs successfully, `ui` saves the feed, scroll
-position, speed, pause state and watched roots (`reload::Saved`) to a 0600
+position, speed and watched roots (`reload::Saved`) to a 0600
 file. It then `exec`s the new binary with the same arguments and
 `DIFFTOP_RESUME` pointing at that file. The terminal isn't restored first,
 so the screen never flashes back to the shell. The new process reads and
@@ -145,7 +145,7 @@ ConPTY) scroll by one line, and from then on the real screen no longer
 matches what ratatui thinks it drew. It also turns on mouse reporting, so
 the wheel can scroll, and bracketed paste. Many terminals paste on right-click; without
 bracketed paste, the pasted text would arrive as keypresses and could
-pause or clear the screen. `ui::stop` undoes all three, and a panic hook calls
+clear the screen. `ui::stop` undoes all three, and a panic hook calls
 it too, so a crash never leaves the terminal in mouse mode.
 
 ## Decisions and why

@@ -35,7 +35,6 @@ pub struct Saved {
     pub roots: Vec<PathBuf>,
     pub previous: Option<PathBuf>,
     pub speed: f64,
-    pub paused: bool,
     /// Lines already on screen (and scrolled past), oldest first.
     pub shown: Vec<SavedLine>,
     /// Lines still waiting to rise.

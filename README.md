@@ -57,7 +57,6 @@ difftop --help            # everything else
 
 | Key                    | Action                                 |
 | ---------------------- | -------------------------------------- |
-| `space`                | pause / resume                         |
 | `↑` `↓` / mouse wheel  | scroll back through history            |
 | `PgUp` `PgDn`          | scroll a page                          |
 | `Home` / `End`         | jump to the oldest line / follow again |
@@ -65,11 +64,12 @@ difftop --help            # everything else
 | wheel over the speed   | faster / slower, in finer steps        |
 | `c`                    | clear the screen                       |
 | `:` or `!`             | open the shell prompt                  |
-| `q` / `Ctrl-C`         | quit                                   |
+| `Ctrl-C`               | quit                                   |
 | `Ctrl-L`               | redraw the screen                      |
 | `Esc` `Esc`            | quit (the first press asks to confirm) |
 
-The ones you wouldn't guess are listed at the bottom of the screen.
+The status line at the bottom shows what's watched, the two keys you
+wouldn't guess (`:` and `c`), and the file count and speed.
 
 You can scroll back at any time. While you're scrolled back, the view stays
 put and new changes keep arriving below it. A notice at the bottom shows

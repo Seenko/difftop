@@ -13,8 +13,8 @@ uses [Semantic Versioning](https://semver.org/).
   while changes keep arriving. A toast shows how many newer lines there
   are; press `End` or click it to follow again.
 - Scrolling the mouse wheel over the speed display (`30/s`) changes the speed.
-- The main shortcuts (pause, speed, clear, quit) are listed at the bottom of
-  the screen, wrapping in narrow panes.
+- One status line at the bottom: what's watched, the `:` and `c` keys, and
+  the file count and speed.
 
 - A shell prompt (`:` or `!`): run any command, see its output in the
   feed as it runs, stop it with `Ctrl-C`. When a command changes directory,
@@ -27,7 +27,7 @@ uses [Semantic Versioning](https://semver.org/).
 
 - Hot reload: replacing the difftop binary makes every running difftop
   switch to the new version within seconds, keeping history, scroll
-  position, speed, pause and the watched folder.
+  position, speed and the watched folder.
 
 ### Changed
 
@@ -37,7 +37,8 @@ uses [Semantic Versioning](https://semver.org/).
 - Softer colors for the quit warning.
 
 - Quitting with `Esc` takes two presses; the first shows "Press Esc again
-  to quit difftop". `q` still quits at once.
+  to quit difftop". `Ctrl-C` quits at once.
+- Removed pause (space) and `q`; quit with `Ctrl-C` like any other program.
 
 ### Fixed
 
@@ -63,6 +64,6 @@ uses [Semantic Versioning](https://semver.org/).
   `--hidden` turn those off.
 - Themes: `ansi` (the default, follows the terminal's palette live), the
   themes bundled from bat, any `.tmTheme` file, and any base16/base24 scheme.
-- Keys: pause, change speed, clear, quit.
+- Keys: change speed, clear, quit.
 - Binary files and files over 1 MiB show their size change instead of a diff.
 - Static Linux binaries (x86_64, arm64) attached to each GitHub release.

@@ -23,7 +23,6 @@ pub struct Feed<T> {
     budget: f64,
     /// Lines per second when the queue is short.
     pub speed: f64,
-    pub paused: bool,
     /// Total lines dropped because the queue overflowed.
     pub dropped: usize,
     /// How many lines sit below the view; 0 means following the newest line.
@@ -37,7 +36,6 @@ impl<T> Feed<T> {
             pending: VecDeque::new(),
             budget: 0.0,
             speed,
-            paused: false,
             dropped: 0,
             offset: 0,
         }
@@ -55,7 +53,7 @@ impl<T> Feed<T> {
     /// plus half the queue per second, so small changes glide in at a
     /// readable pace and big bursts still drain within a few seconds.
     pub fn tick(&mut self, elapsed: Duration) {
-        if self.paused || self.pending.is_empty() {
+        if self.pending.is_empty() {
             self.budget = 0.0;
             return;
         }
@@ -166,16 +164,6 @@ mod tests {
         // ...and the next 50 ms completes the first line.
         feed.tick(SECOND / 20);
         assert_eq!(feed.queued(), 1);
-    }
-
-    #[test]
-    fn pause_holds_everything() {
-        let mut feed = Feed::new(10.0);
-        feed.push(0..5);
-        feed.paused = true;
-        feed.tick(SECOND * 10);
-        assert_eq!(feed.queued(), 5);
-        assert_eq!(feed.view(10).count(), 0);
     }
 
     #[test]

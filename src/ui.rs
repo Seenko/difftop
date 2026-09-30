@@ -243,7 +243,6 @@ impl App {
             .restore(entries(saved.shown), entries(saved.pending), saved.below);
         self.group = saved.group;
         self.feed.speed = saved.speed.max(1.0);
-        self.feed.paused = saved.paused;
         self.previous = saved.previous;
         self.marker(&format!("reloaded difftop {}", env!("CARGO_PKG_VERSION")));
     }
@@ -259,7 +258,6 @@ impl App {
             roots: self.roots.clone(),
             previous: self.previous.clone(),
             speed: self.feed.speed,
-            paused: self.feed.paused,
             shown: shown.map(SavedLine::from).collect(),
             pending: pending.map(SavedLine::from).collect(),
             below,
@@ -306,12 +304,10 @@ impl App {
             // so one Esc too many after closing the prompt is harmless.
             KeyCode::Esc if quit_armed => return ControlFlow::Break(()),
             KeyCode::Esc => self.quit_armed = Some(Instant::now()),
-            KeyCode::Char('q') => return ControlFlow::Break(()),
             KeyCode::Char(':') | KeyCode::Char('!') => {
                 self.input = Some(String::new());
                 self.refresh_prompt();
             }
-            KeyCode::Char(' ') => self.feed.paused = !self.feed.paused,
             KeyCode::Up | KeyCode::Char('k') => self.feed.scroll(1, self.height),
             KeyCode::Down | KeyCode::Char('j') => self.feed.scroll(-1, self.height),
             KeyCode::PageUp => self.feed.scroll(page, self.height),
@@ -474,17 +470,10 @@ impl App {
         // In the shell, the prompt sits in its own box and the status line
         // makes way for it.
         let in_shell = self.input.is_some();
-        let bottom = match &self.input {
-            Some(input) => self.prompt_with(input),
-            None => self.keys(area.width),
-        };
-        let bottom_height = bottom.len() as u16 + if in_shell { 2 } else { 0 };
-        let [feed_area, info_area, bottom_area] = Layout::vertical([
-            Constraint::Fill(1),
-            Constraint::Length(if in_shell { 0 } else { 1 }),
-            Constraint::Length(bottom_height),
-        ])
-        .areas(area);
+        let prompt = self.input.as_deref().map(|input| self.prompt_with(input));
+        let bottom_height = prompt.as_ref().map_or(1, |lines| lines.len() as u16 + 2);
+        let [feed_area, bottom_area] =
+            Layout::vertical([Constraint::Fill(1), Constraint::Length(bottom_height)]).areas(area);
 
         self.height = feed_area.height as usize;
         // Shell commands print inside a box: two border columns, two of padding.
@@ -493,29 +482,26 @@ impl App {
         self.draw_feed(frame, feed_area, following && !in_shell);
 
         self.toast = (!following).then(|| self.draw_toast(frame, feed_area));
-        self.speed = (!in_shell).then(|| self.draw_info(frame, info_area));
-        let bottom_inner = if in_shell {
-            let prompt_box = Block::bordered()
-                .border_type(BorderType::Rounded)
-                .border_style(c.muted)
-                .padding(Padding::horizontal(1))
-                .title(self.notch("─┐", [("", "shell")], "┌"))
-                .title_bottom(
-                    self.notch("┘", [("esc", " leave"), ("^C", " stop")], "└─")
-                        .right_aligned(),
-                );
-            let inner = prompt_box.inner(bottom_area);
-            frame.render_widget(prompt_box, bottom_area);
-            inner
-        } else {
-            bottom_area
+        let Some(prompt) = prompt else {
+            self.speed = Some(self.draw_info(frame, bottom_area));
+            return;
         };
-        frame.render_widget(Paragraph::new(bottom.clone()), bottom_inner);
-        if in_shell {
-            let x = bottom_inner.x + bottom.last().map_or(0, Line::width) as u16;
-            let y = bottom_inner.bottom().saturating_sub(1);
-            frame.set_cursor_position((x.min(bottom_inner.right().saturating_sub(1)), y));
-        }
+        self.speed = None;
+        let prompt_box = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(c.muted)
+            .padding(Padding::horizontal(1))
+            .title(self.notch("─┐", [("", "shell")], "┌"))
+            .title_bottom(
+                self.notch("┘", [("esc", " leave"), ("^C", " stop")], "└─")
+                    .right_aligned(),
+            );
+        let inner = prompt_box.inner(bottom_area);
+        frame.render_widget(prompt_box, bottom_area);
+        let x = inner.x + prompt.last().map_or(0, Line::width) as u16;
+        let y = inner.bottom().saturating_sub(1);
+        frame.render_widget(Paragraph::new(prompt), inner);
+        frame.set_cursor_position((x.min(inner.right().saturating_sub(1)), y));
     }
 
     /// The feed, newest line at the bottom, shell commands in their boxes.
@@ -645,14 +631,18 @@ impl App {
         self.feed.speed = (self.feed.speed * factor).max(1.0);
     }
 
-    /// What's watched on the left, how it's going on the right. Returns
-    /// where the speed was drawn.
+    /// The status line: what's watched on the left, the key hints, how it's
+    /// going on the right. Returns where the speed was drawn.
     fn draw_info(&self, frame: &mut Frame, area: Rect) -> Rect {
         let c = &self.colors;
         let (status, speed_width) = self.status();
-        let status_width = status.width() as u16;
-        let [label_area, status_area] =
-            Layout::horizontal([Constraint::Fill(1), Constraint::Length(status_width)]).areas(area);
+        let hints = self.hints();
+        let [label_area, hints_area, status_area] = Layout::horizontal([
+            Constraint::Fill(1),
+            Constraint::Length(hints.width() as u16),
+            Constraint::Length(status.width() as u16),
+        ])
+        .areas(area);
         // Leave a one-column gap before the status and keep the end of long
         // paths, which is the part that tells folders apart.
         let room = (label_area.width as usize).saturating_sub(2);
@@ -672,6 +662,7 @@ impl App {
             ),
         };
         frame.render_widget(label, label_area);
+        frame.render_widget(hints, hints_area);
         frame.render_widget(status, status_area);
         Rect {
             x: status_area.right().saturating_sub(speed_width),
@@ -684,9 +675,6 @@ impl App {
     /// Also returns the width of the speed, which is always last.
     fn status(&self) -> (Line<'static>, u16) {
         let mut parts = Vec::new();
-        if self.feed.paused {
-            parts.push("paused".to_string());
-        }
         if self.running.is_some() {
             parts.push("running…".to_string());
         }
@@ -708,34 +696,18 @@ impl App {
         (line, width)
     }
 
-    /// The shortcuts nobody would guess, wrapped onto as many lines as `width` needs.
-    fn keys(&self, width: u16) -> Vec<Line<'static>> {
-        let pause = if self.feed.paused { "resume" } else { "pause" };
-        // Scrolling keys are left out on purpose: arrows, PgUp/PgDn, Home/End
-        // and the wheel do what everyone expects, and the toast names End.
-        let keys = [
-            ("space", pause),
-            (":", "shell"),
-            ("+/-", "speed"),
-            ("c", "clear"),
-            ("q", "quit"),
-        ];
-        let key_style = Style::new()
+    /// The keys nobody would guess. Scrolling, speed and quitting are left
+    /// out on purpose: they work the way people expect.
+    fn hints(&self) -> Line<'static> {
+        let key = Style::new()
             .fg(self.colors.accent)
             .add_modifier(Modifier::BOLD);
-        let widths = keys.map(|(key, action)| key.chars().count() + 1 + action.len());
-        wrap(&widths, width as usize)
-            .into_iter()
-            .map(|row| {
-                let mut spans = Vec::new();
-                for (key, action) in &keys[row] {
-                    spans.push(Span::raw(" "));
-                    spans.push(Span::styled(*key, key_style));
-                    spans.push(Span::styled(format!(" {action}  "), self.colors.muted));
-                }
-                Line::from(spans)
-            })
-            .collect()
+        let mut spans = Vec::new();
+        for (hotkey, action) in [(":", "shell"), ("c", "clear")] {
+            spans.push(Span::styled(hotkey, key));
+            spans.push(Span::styled(format!(" {action}   "), self.colors.muted));
+        }
+        Line::from(spans)
     }
 }
 
@@ -773,26 +745,6 @@ fn pieces<'a>(entries: &[&'a Entry]) -> Vec<Piece<'a>> {
 /// Whether the mouse is over `area`.
 fn hit(area: Option<Rect>, mouse: MouseEvent) -> bool {
     area.is_some_and(|a| a.contains(Position::new(mouse.column, mouse.row)))
-}
-
-/// Packs items of the given widths into rows no wider than `width`, in
-/// order, each item followed by a 3-column gap. Returns the index range of
-/// each row. An item wider than `width` still gets a row of its own.
-fn wrap(widths: &[usize], width: usize) -> Vec<std::ops::Range<usize>> {
-    let mut rows = Vec::new();
-    let (mut start, mut used) = (0, 0);
-    for (i, w) in widths.iter().enumerate() {
-        let need = w + 3;
-        if used + need > width && i > start {
-            rows.push(start..i);
-            (start, used) = (i, 0);
-        }
-        used += need;
-    }
-    if start < widths.len() {
-        rows.push(start..widths.len());
-    }
-    rows
 }
 
 /// `text` cut to at most `width` characters, keeping the end: `…/b/c`.
@@ -850,15 +802,6 @@ mod tests {
                 "bottom",
             ]
         );
-    }
-
-    #[test]
-    fn wrap_packs_rows_in_order() {
-        let one_row = wrap(&[5, 5, 5], 100);
-        assert_eq!((one_row.len(), one_row[0].clone()), (1, 0..3));
-        assert_eq!(wrap(&[5, 5, 5], 16), [0..2, 2..3]);
-        assert_eq!(wrap(&[5, 50, 5], 16), [0..1, 1..2, 2..3]);
-        assert!(wrap(&[], 10).is_empty());
     }
 
     #[test]
