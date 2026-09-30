@@ -360,16 +360,11 @@ enum Batch {
 /// Returns `None` once every sender is gone.
 fn next_batch(rx: &Receiver<Input>) -> Option<Batch> {
     let mut paths = BTreeSet::new();
-    let mut wait = None;
+    let mut input = rx.recv().ok()?;
+    // The clock starts at the first event, not when we started waiting:
+    // after an idle stretch that deadline would already be long gone.
     let deadline = Instant::now() + MAX_BATCH;
     loop {
-        let input = match wait {
-            None => rx.recv().ok()?,
-            Some(wait) => match rx.recv_timeout(wait) {
-                Ok(input) => input,
-                Err(_) => return Some(Batch::Paths(paths)),
-            },
-        };
         match input {
             Input::Watch(roots) => return Some(Batch::Watch(roots)),
             // Access events fire when *we* read a file; following them would loop.
@@ -378,7 +373,11 @@ fn next_batch(rx: &Receiver<Input>) -> Option<Batch> {
             }
             Input::Fs(_) => {}
         }
-        wait = Some(QUIET.min(deadline.saturating_duration_since(Instant::now())));
+        let wait = QUIET.min(deadline.saturating_duration_since(Instant::now()));
+        input = match rx.recv_timeout(wait) {
+            Ok(input) => input,
+            Err(_) => return Some(Batch::Paths(paths)),
+        };
     }
 }
 
@@ -451,6 +450,30 @@ mod tests {
         let deleted = next_change(&rx);
         assert_eq!(deleted.kind, ChangeKind::Deleted);
         assert_eq!(deleted.before.text.as_deref(), Some("one\ntwo\n"));
+    }
+
+    #[test]
+    fn a_write_in_two_steps_is_one_change() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        fs::write(root.join("f.txt"), "old\n").unwrap();
+        let (_handle, rx) = start(&root);
+        // Idle past MAX_BATCH first: batching must still work after a pause.
+        thread::sleep(MAX_BATCH * 2);
+
+        // Like `cmd > f.txt`: the shell empties the file, the command writes
+        // it a moment later.
+        fs::write(root.join("f.txt"), "").unwrap();
+        thread::sleep(Duration::from_millis(15));
+        fs::write(root.join("f.txt"), "new\n").unwrap();
+
+        let change = next_change(&rx);
+        assert_eq!(change.before.text.as_deref(), Some("old\n"));
+        assert_eq!(change.after.text.as_deref(), Some("new\n"));
+        assert!(
+            rx.recv_timeout(Duration::from_millis(400)).is_err(),
+            "reported twice"
+        );
     }
 
     #[test]
