@@ -1,14 +1,11 @@
 //! Watches folders and reports what changed in each file.
 //!
-//! On startup every small text file under the roots is read into memory, so
-//! the first edit to a file can already be shown as a diff.
-//!
-//! On Linux every folder gets its own inotify watch, because inotify can't
-//! watch recursively. Ignored folders (`target/`, `node_modules/`, ...) are
-//! never watched at all, which keeps us far from the kernel's watch limit on
-//! big trees. Folders created later are picked up as they appear. Elsewhere
-//! (macOS FSEvents) one recursive watch per root is both native and cheaper,
-//! and ignored paths are filtered out as events arrive.
+//! On startup every folder under the roots gets its own (non-recursive)
+//! inotify watch and every small text file is read into memory, so the first
+//! edit to a file can already be shown as a diff. Folders created later are
+//! picked up as they appear. Ignored folders (`target/`, `node_modules/`, ...)
+//! are never watched at all, which keeps us far away from the kernel's watch
+//! limit on big trees.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
@@ -22,8 +19,6 @@ use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
 use crate::filter::Filter;
 
-/// Whether each folder needs its own watch (see the module docs).
-const WATCH_EACH_FOLDER: bool = cfg!(target_os = "linux");
 /// Files bigger than this are never diffed.
 const MAX_FILE_SIZE: u64 = 1024 * 1024;
 /// How much file content the startup scan may keep in memory.
@@ -85,9 +80,6 @@ pub fn run(options: Options, mut emit: impl FnMut(Event)) -> Result<()> {
         warned: false,
     };
     for root in &options.roots {
-        if !WATCH_EACH_FOLDER {
-            state.watcher.watch(root, RecursiveMode::Recursive)?;
-        }
         state.scan(root, false, &mut emit);
     }
     emit(Event::Ready {
@@ -122,9 +114,7 @@ impl State {
             if !self.watched.insert(dir.clone()) {
                 continue;
             }
-            if WATCH_EACH_FOLDER
-                && let Err(err) = self.watcher.watch(&dir, RecursiveMode::NonRecursive)
-            {
+            if let Err(err) = self.watcher.watch(&dir, RecursiveMode::NonRecursive) {
                 self.warn_about(err, emit);
             }
             let Ok(entries) = fs::read_dir(&dir) else {
