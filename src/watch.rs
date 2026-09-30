@@ -6,11 +6,16 @@
 //! picked up as they appear. Ignored folders (`target/`, `node_modules/`, ...)
 //! are never watched at all, which keeps us far away from the kernel's watch
 //! limit on big trees.
+//!
+//! The watcher runs on its own thread ([`spawn`]). File events and requests
+//! to watch other folders ([`Handle::watch`]) arrive on the same channel, so
+//! the thread only ever waits in one place.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{self, Metadata};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::Result;
@@ -94,31 +99,56 @@ impl Snapshot {
     }
 }
 
-/// Runs forever on the calling thread, calling `emit` for everything that
-/// happens. Only returns if the watcher can't be created.
-pub fn run(options: Options, mut emit: impl FnMut(Event)) -> Result<()> {
-    let (tx, rx) = mpsc::channel();
-    let mut state = State {
-        filter: Filter::new(options.roots.clone(), options.hidden, options.gitignore),
-        watcher: notify::recommended_watcher(tx)?,
-        watched: HashSet::new(),
-        cache: HashMap::new(),
-        cached_bytes: 0,
-        warned: false,
-    };
-    for root in &options.roots {
-        state.scan(root, false, &mut emit);
-    }
-    emit(Event::Ready {
-        files: state.cache.len(),
-    });
+/// Everything the watcher thread waits for, on a single channel.
+enum Input {
+    Fs(notify::Result<notify::Event>),
+    /// Stop watching the current folders and watch these instead.
+    Watch(Vec<PathBuf>),
+}
 
+/// Lets other threads steer a running watcher.
+pub struct Handle(Sender<Input>);
+
+impl Handle {
+    /// Switches to watching `roots` (absolute, canonical folder paths). A
+    /// fresh scan follows, finishing with another [`Event::Ready`].
+    pub fn watch(&self, roots: Vec<PathBuf>) {
+        let _ = self.0.send(Input::Watch(roots));
+    }
+}
+
+/// Starts the watcher thread, which calls `emit` for everything that happens.
+pub fn spawn(options: Options, emit: impl FnMut(Event) + Send + 'static) -> Handle {
+    let (tx, rx) = mpsc::channel();
+    let handle = Handle(tx.clone());
+    thread::spawn(move || run(options, tx, rx, emit));
+    handle
+}
+
+fn run(mut options: Options, tx: Sender<Input>, rx: Receiver<Input>, mut emit: impl FnMut(Event)) {
+    let mut state = match State::start(&options, &tx, &mut emit) {
+        Ok(state) => state,
+        Err(err) => return emit(Event::Warning(format!("can't watch: {err}"))),
+    };
     while let Some(batch) = next_batch(&rx) {
-        for path in batch {
-            state.update(path, &mut emit);
+        match batch {
+            Batch::Paths(paths) => {
+                for path in paths {
+                    state.update(path, &mut emit);
+                }
+            }
+            Batch::Watch(roots) => {
+                options.roots = roots;
+                // Dropping the old state drops its watcher, which removes
+                // every old watch. Events from them still in the channel
+                // are outside the new roots, so the filter ignores them.
+                match State::start(&options, &tx, &mut emit) {
+                    Ok(new) => state = new,
+                    Err(err) => emit(Event::Warning(format!("can't watch: {err}"))),
+                }
+            }
         }
     }
-    Ok(())
 }
 
 struct State {
@@ -132,6 +162,28 @@ struct State {
 }
 
 impl State {
+    /// Creates a watcher for `options.roots`, scans them, and reports Ready.
+    fn start(options: &Options, tx: &Sender<Input>, emit: &mut impl FnMut(Event)) -> Result<Self> {
+        let tx = tx.clone();
+        let mut state = State {
+            filter: Filter::new(options.roots.clone(), options.hidden, options.gitignore),
+            watcher: notify::recommended_watcher(move |event| {
+                let _ = tx.send(Input::Fs(event));
+            })?,
+            watched: HashSet::new(),
+            cache: HashMap::new(),
+            cached_bytes: 0,
+            warned: false,
+        };
+        for root in &options.roots {
+            state.scan(root, false, emit);
+        }
+        emit(Event::Ready {
+            files: state.cache.len(),
+        });
+        Ok(state)
+    }
+
     /// Watches `dir` and everything below it. With `report`, files found are
     /// announced as created (a folder appeared at runtime); without, they are
     /// silently remembered (startup).
@@ -248,26 +300,35 @@ fn read_text(path: &Path, size: u64) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
-/// Waits for the next burst of events and returns the paths it touched.
-/// Returns `None` once the watcher is gone.
-fn next_batch(rx: &Receiver<notify::Result<notify::Event>>) -> Option<BTreeSet<PathBuf>> {
-    let mut batch = BTreeSet::new();
-    let mut add = |event: notify::Result<notify::Event>| {
-        let Ok(event) = event else { return };
-        // Access events fire when *we* read a file; following them would loop.
-        if !matches!(event.kind, EventKind::Access(_)) {
-            batch.extend(event.paths);
-        }
-    };
+enum Batch {
+    Paths(BTreeSet<PathBuf>),
+    Watch(Vec<PathBuf>),
+}
 
-    add(rx.recv().ok()?);
+/// Waits for the next burst of file events and returns the paths it touched,
+/// or a request to watch other folders, which cuts any burst short.
+/// Returns `None` once every sender is gone.
+fn next_batch(rx: &Receiver<Input>) -> Option<Batch> {
+    let mut paths = BTreeSet::new();
+    let mut wait = None;
     let deadline = Instant::now() + MAX_BATCH;
     loop {
-        let wait = QUIET.min(deadline.saturating_duration_since(Instant::now()));
-        match rx.recv_timeout(wait) {
-            Ok(event) => add(event),
-            Err(_) => return Some(batch),
+        let input = match wait {
+            None => rx.recv().ok()?,
+            Some(wait) => match rx.recv_timeout(wait) {
+                Ok(input) => input,
+                Err(_) => return Some(Batch::Paths(paths)),
+            },
+        };
+        match input {
+            Input::Watch(roots) => return Some(Batch::Watch(roots)),
+            // Access events fire when *we* read a file; following them would loop.
+            Input::Fs(Ok(event)) if !matches!(event.kind, EventKind::Access(_)) => {
+                paths.extend(event.paths);
+            }
+            Input::Fs(_) => {}
         }
+        wait = Some(QUIET.min(deadline.saturating_duration_since(Instant::now())));
     }
 }
 
@@ -275,20 +336,21 @@ fn next_batch(rx: &Receiver<notify::Result<notify::Event>>) -> Option<BTreeSet<P
 mod tests {
     use super::*;
     use std::sync::mpsc::Receiver;
-    use std::thread;
 
     /// Starts a real watcher on a temp folder and returns its event stream
     /// once the startup scan is done.
-    fn start(root: &Path) -> Receiver<Event> {
+    fn start(root: &Path) -> (Handle, Receiver<Event>) {
         let (tx, rx) = mpsc::channel();
         let options = Options {
             roots: vec![root.to_path_buf()],
             hidden: false,
             gitignore: true,
         };
-        thread::spawn(move || run(options, |e| tx.send(e).unwrap()));
+        let handle = spawn(options, move |e| {
+            let _ = tx.send(e);
+        });
         assert!(matches!(next(&rx), Event::Ready { .. }));
-        rx
+        (handle, rx)
     }
 
     fn next(rx: &Receiver<Event>) -> Event {
@@ -309,7 +371,7 @@ mod tests {
         let root = tmp.path().canonicalize().unwrap();
         fs::write(root.join("a.txt"), "one\n").unwrap();
         fs::write(root.join(".gitignore"), "*.log\n").unwrap();
-        let rx = start(&root);
+        let (_handle, rx) = start(&root);
 
         fs::write(root.join("a.txt"), "one\ntwo\n").unwrap();
         let edit = next_change(&rx);
@@ -339,5 +401,28 @@ mod tests {
         let deleted = next_change(&rx);
         assert_eq!(deleted.kind, ChangeKind::Deleted);
         assert_eq!(deleted.before.text.as_deref(), Some("one\ntwo\n"));
+    }
+
+    #[test]
+    fn switching_folders_moves_the_watch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let (old, new) = (root.join("old"), root.join("new"));
+        fs::create_dir(&old).unwrap();
+        fs::create_dir(&new).unwrap();
+        fs::write(new.join("b.txt"), "b\n").unwrap();
+        let (handle, rx) = start(&old);
+
+        handle.watch(vec![new.clone()]);
+        assert!(matches!(next(&rx), Event::Ready { files: 1 }));
+
+        // The old folder is silent now; the new one is watched and was
+        // scanned, so its first edit is already a real diff.
+        fs::write(old.join("a.txt"), "a\n").unwrap();
+        fs::write(new.join("b.txt"), "b\nB\n").unwrap();
+        let change = next_change(&rx);
+        assert_eq!(change.path, new.join("b.txt"));
+        assert_eq!(change.kind, ChangeKind::Modified);
+        assert!(rx.recv_timeout(Duration::from_millis(400)).is_err());
     }
 }

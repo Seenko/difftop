@@ -77,6 +77,7 @@ publishing, run it by hand: `gh workflow run release.yml`.
 | You want to...                  | Look at                                     |
 | ------------------------------- | ------------------------------------------- |
 | add a flag                      | `cli.rs`, then wire it in `main.rs`         |
+| add a `:` command               | `command.rs` (parse), `ui.rs` (run)         |
 | change what's ignored           | `filter.rs`                                 |
 | change how a change looks       | `render.rs`                                 |
 | change the motion or pacing     | `feed.rs`                                   |

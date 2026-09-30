@@ -16,6 +16,13 @@ uses [Semantic Versioning](https://semver.org/).
 - The main shortcuts (pause, speed, clear, quit) are listed at the bottom of
   the screen, wrapping in narrow panes.
 
+- Command line (`:` or `!`) with `cd <folder>` to watch another folder
+  live, `cd -` and `cd ~`, Tab completion, and paste. What's on screen stays.
+
+### Changed
+
+- `Esc` no longer quits (it closes the command line); `q` and `Ctrl-C` do.
+
 ### Fixed
 
 - Right-clicking (which pastes in many terminals) could pause or clear

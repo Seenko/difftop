@@ -64,7 +64,8 @@ difftop --help            # everything else
 | `+` / `-`              | faster / slower                        |
 | wheel over the speed   | faster / slower, in finer steps        |
 | `c`                    | clear the screen                       |
-| `q` / `Esc`            | quit                                   |
+| `:` or `!`             | open the command line                  |
+| `q` / `Ctrl-C`         | quit                                   |
 
 The ones you wouldn't guess are listed at the bottom of the screen.
 
@@ -72,6 +73,21 @@ You can scroll back at any time. While you're scrolled back, the view stays
 put and new changes keep arriving below it. A notice at the bottom shows
 how many newer lines there are. Press `End` or click the notice to follow
 again.
+
+### Moving around
+
+Press `:` (or `!`) to open the command line. It works like a shell prompt:
+
+| Command         | Does                                                   |
+| --------------- | ------------------------------------------------------ |
+| `cd <folder>`   | watch another folder instead, without restarting       |
+| `cd` / `cd ~`   | watch your home folder                                 |
+| `cd -`          | go back to the previous folder                         |
+| `q`             | quit                                                   |
+
+`Tab` completes folder names, pasting works, `Enter` runs the command, and
+`Esc` closes the line. What's already on screen stays; a line marks where
+you switched folders.
 
 difftop uses the mouse for scrolling, so to select text with the mouse,
 hold `Shift` while dragging (most terminals).

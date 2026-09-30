@@ -5,6 +5,7 @@
 //! See ARCHITECTURE.md for the full picture.
 
 mod cli;
+mod command;
 mod diff;
 mod feed;
 mod filter;
@@ -15,7 +16,6 @@ mod ui;
 mod watch;
 
 use std::sync::mpsc;
-use std::thread;
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
@@ -50,34 +50,34 @@ fn main() -> Result<()> {
         .collect::<Vec<_>>()
         .join("  ");
 
+    // With a single folder, difftop "is in" it, like a shell: relative `cd`s
+    // start there and file names are shown relative to it.
+    if let [root] = roots.as_slice() {
+        std::env::set_current_dir(root)?;
+    }
+
     let (tx, rx) = mpsc::channel();
     let options = watch::Options {
         roots,
         hidden: args.hidden,
         gitignore: !args.no_ignore,
     };
-    let context = args.context;
-    thread::spawn(move || {
-        let renderer = Renderer {
-            highlighter: highlight::Highlighter::new(theme),
-            colors,
-            context,
+    let renderer = Renderer {
+        highlighter: highlight::Highlighter::new(theme),
+        colors,
+        context: args.context,
+    };
+    let watcher = watch::spawn(options, move |event| {
+        let msg = match event {
+            watch::Event::Ready { files } => Msg::Ready { files },
+            watch::Event::Change(change) => Msg::Lines(renderer.render(&change)),
+            watch::Event::Warning(text) => Msg::Warning(text),
         };
-        let result = watch::run(options, |event| {
-            let msg = match event {
-                watch::Event::Ready { files } => Msg::Ready { files },
-                watch::Event::Change(change) => Msg::Lines(renderer.render(&change)),
-                watch::Event::Warning(text) => Msg::Warning(text),
-            };
-            // The screen is gone once the user quit; nothing left to do.
-            let _ = tx.send(msg);
-        });
-        if let Err(err) = result {
-            let _ = tx.send(Msg::Warning(format!("watcher stopped: {err}")));
-        }
+        // The screen is gone once the user quit; nothing left to do.
+        let _ = tx.send(msg);
     });
 
-    let app = App::new(feed::Feed::new(args.speed.max(1.0)), colors, label);
+    let app = App::new(feed::Feed::new(args.speed.max(1.0)), colors, label, watcher);
     let mut terminal = ui::start()?;
     let result = ui::run(&mut terminal, app, rx);
     ui::stop();

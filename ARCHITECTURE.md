@@ -31,8 +31,9 @@ it is for. Start there.
 | Module         | Job                                                                 | Knows about terminals? |
 | -------------- | ------------------------------------------------------------------- | ---------------------- |
 | `main.rs`      | Parses flags, wires the two threads together.                       | yes                    |
+| `command.rs`   | The `:` command line: parsing, `cd` path resolving, Tab completion. | no                     |
 | `cli.rs`       | Every command-line flag. `--help` text comes from its doc comments. | no                     |
-| `watch.rs`     | inotify watches, event batching, file cache, emits `Change`s.       | no                     |
+| `watch.rs`     | Watcher thread: inotify, batching, file cache, emits `Change`s.     | no                     |
 | `filter.rs`    | Which paths are ignored (`.gitignore`, hidden, `.git`).             | no                     |
 | `diff.rs`      | Old + new text → hunks of `DiffLine`s.                              | no                     |
 | `highlight.rs` | Text → colored spans, using bat's syntax definitions.               | spans only             |
@@ -79,6 +80,15 @@ by one, so the view holds still as new lines arrive underneath. `ui`
 dims nothing while scrolled, and it shows a toast with the number of
 newer lines. The toast's position is remembered so a click on it can
 resume following.
+
+**Switching folders.** `watch::spawn` returns a `Handle`. `Handle::watch`
+sends new roots over the same channel the file events use, so the watcher
+thread only ever waits in one place. On a switch, the thread drops its
+whole `State`, which removes every old watch, and starts over with a fresh
+scan. Events from the old watches that are still queued fall outside the
+new roots, so the filter drops them. `cd` also changes the process's
+working directory, so relative paths, `cd -` and the file names on screen
+all follow it, like in a shell.
 
 **Input.** `ui::start` turns on mouse reporting, so the wheel can scroll,
 and bracketed paste. Many terminals paste on right-click; without

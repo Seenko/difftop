@@ -1,7 +1,9 @@
-//! The terminal side: setup, the frame loop, drawing, keys and mouse.
+//! The terminal side: setup, the frame loop, drawing, keys, mouse, and the
+//! `:` command line.
 
 use std::io;
 use std::ops::ControlFlow;
+use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
@@ -17,11 +19,16 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 
+use crate::command::{self, Command};
 use crate::feed::Feed;
+use crate::render::tilde;
 use crate::theme::UiColors;
+use crate::watch;
 
 /// About 30 frames per second: smooth enough, and cheap when idle.
 const FRAME: Duration = Duration::from_millis(33);
+/// How long an error from the command line stays in the footer.
+const NOTICE: Duration = Duration::from_secs(4);
 /// Lines moved per mouse-wheel notch.
 const WHEEL: isize = 3;
 /// Speed change per `+`/`-` press, and per wheel notch over the speed display.
@@ -48,6 +55,13 @@ pub struct App {
     toast: Option<Rect>,
     /// Where the speed was drawn, so the wheel over it changes the speed.
     speed: Option<Rect>,
+    watcher: watch::Handle,
+    /// The command being typed, while the `:` line is open.
+    input: Option<String>,
+    /// The folder before the last `cd`, for `cd -`.
+    previous: Option<PathBuf>,
+    /// A command-line error, shown in the footer for a few seconds.
+    notice: Option<(String, Instant)>,
 }
 
 /// Takes over the terminal. Mouse reporting makes the wheel scroll, and
@@ -90,7 +104,15 @@ pub fn run(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) -> R
             let flow = match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => app.on_key(key),
                 Event::Mouse(mouse) => app.on_mouse(mouse),
-                // Pastes, focus changes and resizes need nothing from us.
+                // Pasting a path into the command line is handy; anywhere
+                // else a paste (a right-click in many terminals) is ignored.
+                Event::Paste(text) => {
+                    if let Some(input) = &mut app.input {
+                        input.push_str(text.trim_end_matches(['\n', '\r']));
+                    }
+                    ControlFlow::Continue(())
+                }
+                // Focus changes and resizes need nothing from us.
                 _ => ControlFlow::Continue(()),
             };
             if flow.is_break() {
@@ -101,7 +123,12 @@ pub fn run(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) -> R
 }
 
 impl App {
-    pub fn new(feed: Feed<Line<'static>>, colors: UiColors, label: String) -> Self {
+    pub fn new(
+        feed: Feed<Line<'static>>,
+        colors: UiColors,
+        label: String,
+        watcher: watch::Handle,
+    ) -> Self {
         Self {
             feed,
             colors,
@@ -111,16 +138,26 @@ impl App {
             height: 0,
             toast: None,
             speed: None,
+            watcher,
+            input: None,
+            previous: None,
+            notice: None,
         }
     }
 
     fn on_key(&mut self, key: KeyEvent) -> ControlFlow<()> {
+        if self.input.is_some() {
+            return self.on_input_key(key);
+        }
         let page = self.height.max(1) as isize;
         match key.code {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 return ControlFlow::Break(());
             }
-            KeyCode::Char('q') | KeyCode::Esc => return ControlFlow::Break(()),
+            // Esc deliberately doesn't quit: it closes the command line, and
+            // pressing it once too often shouldn't end the session.
+            KeyCode::Char('q') => return ControlFlow::Break(()),
+            KeyCode::Char(':') | KeyCode::Char('!') => self.input = Some(String::new()),
             KeyCode::Char(' ') => self.feed.paused = !self.feed.paused,
             KeyCode::Up | KeyCode::Char('k') => self.feed.scroll(1, self.height),
             KeyCode::Down | KeyCode::Char('j') => self.feed.scroll(-1, self.height),
@@ -134,6 +171,69 @@ impl App {
             _ => {}
         }
         ControlFlow::Continue(())
+    }
+
+    /// Keys while the `:` line is open: editing, Tab completion, Enter to run.
+    fn on_input_key(&mut self, key: KeyEvent) -> ControlFlow<()> {
+        let Some(input) = &mut self.input else {
+            return ControlFlow::Continue(());
+        };
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Esc => self.input = None,
+            KeyCode::Char('c') if ctrl => self.input = None,
+            KeyCode::Char('u') if ctrl => input.clear(),
+            KeyCode::Backspace => {
+                input.pop();
+            }
+            KeyCode::Tab => {
+                if let Some(completed) = command::complete(input) {
+                    *input = completed;
+                }
+            }
+            KeyCode::Enter => {
+                let line = self.input.take().unwrap_or_default();
+                return self.run_command(&line);
+            }
+            KeyCode::Char(ch) if !ctrl => input.push(ch),
+            _ => {}
+        }
+        ControlFlow::Continue(())
+    }
+
+    fn run_command(&mut self, line: &str) -> ControlFlow<()> {
+        let result = match command::parse(line) {
+            Ok(Command::Quit) => return ControlFlow::Break(()),
+            Ok(Command::Cd(arg)) => {
+                command::resolve(&arg, self.previous.as_deref()).and_then(|dir| self.cd(dir))
+            }
+            Err(err) => Err(err),
+        };
+        if let Err(err) = result {
+            self.notice = Some((err, Instant::now()));
+        }
+        ControlFlow::Continue(())
+    }
+
+    /// Moves difftop into `dir` and watches it instead of what it watched.
+    /// History already on screen stays; a marker shows where the move happened.
+    fn cd(&mut self, dir: PathBuf) -> Result<(), String> {
+        let here = std::env::current_dir().ok();
+        std::env::set_current_dir(&dir)
+            .map_err(|err| format!("can't enter {}: {err}", tilde(&dir)))?;
+        self.previous = here;
+        self.label = tilde(&dir);
+        self.files = None;
+        self.feed.push([
+            Line::default(),
+            Line::styled(
+                format!("── now watching {} ──", self.label),
+                self.colors.muted,
+            ),
+            Line::default(),
+        ]);
+        self.watcher.watch(vec![dir]);
+        Ok(())
     }
 
     fn on_mouse(&mut self, mouse: MouseEvent) -> ControlFlow<()> {
@@ -162,7 +262,13 @@ impl App {
             Block::new().style(Style::new().fg(c.foreground).bg(c.background)),
             area,
         );
-        let keys = self.keys(area.width);
+        let keys = match &self.input {
+            Some(input) => vec![Line::from(vec![
+                Span::styled(" :", Style::new().fg(c.accent).add_modifier(Modifier::BOLD)),
+                Span::raw(input.clone()),
+            ])],
+            None => self.keys(area.width),
+        };
         let [feed_area, info_area, keys_area] = Layout::vertical([
             Constraint::Fill(1),
             Constraint::Length(1),
@@ -193,6 +299,10 @@ impl App {
         self.toast = (!following).then(|| self.draw_toast(frame, feed_area));
         self.speed = Some(self.draw_info(frame, info_area));
         frame.render_widget(Paragraph::new(keys), keys_area);
+        if let Some(input) = &self.input {
+            let x = keys_area.x + 2 + input.chars().count() as u16;
+            frame.set_cursor_position((x.min(keys_area.right().saturating_sub(1)), keys_area.y));
+        }
     }
 
     /// A small notice at the bottom middle of the feed while scrolled back.
@@ -215,13 +325,13 @@ impl App {
         area
     }
 
-    /// What's watched on the left, how it's going on the right.
     /// Multiplies the speed by `factor`, never going below one line a second.
     fn change_speed(&mut self, factor: f64) {
         self.feed.speed = (self.feed.speed * factor).max(1.0);
     }
 
-    /// Returns where the speed was drawn.
+    /// What's watched on the left, how it's going on the right. Returns
+    /// where the speed was drawn.
     fn draw_info(&self, frame: &mut Frame, area: Rect) -> Rect {
         let c = &self.colors;
         let (status, speed_width) = self.status();
@@ -231,7 +341,8 @@ impl App {
         // Leave a one-column gap before the status and keep the end of long
         // paths, which is the part that tells folders apart.
         let room = (label_area.width as usize).saturating_sub(2);
-        let label = match &self.warning {
+        let notice = self.notice.as_ref().filter(|(_, at)| at.elapsed() < NOTICE);
+        let label = match notice.map(|(text, _)| text).or(self.warning.as_ref()) {
             Some(warning) => Line::styled(format!(" {warning}"), Style::new().fg(c.removed)),
             None => Line::styled(
                 format!(" {}", tail(&self.label, room)),
@@ -279,6 +390,7 @@ impl App {
         // and the wheel do what everyone expects, and the toast names End.
         let keys = [
             ("space", pause),
+            (":", "command"),
             ("+/-", "speed"),
             ("c", "clear"),
             ("q", "quit"),
