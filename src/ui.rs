@@ -13,8 +13,9 @@ use ratatui::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::crossterm::execute;
+use ratatui::crossterm::terminal::{DisableLineWrap, EnableLineWrap};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
-use ratatui::style::{Modifier, Style, Stylize};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
@@ -95,11 +96,19 @@ pub struct App {
 /// Takes over the terminal. Mouse reporting makes the wheel scroll, and
 /// bracketed paste makes pasted text (a right-click in many terminals)
 /// arrive as one paste event instead of a stream of fake keypresses.
+/// Line wrapping goes off so drawing the bottom-right cell can never make
+/// the terminal scroll (Windows Terminal does, via ConPTY), which would
+/// shift the real screen away from what ratatui thinks is on it.
 pub fn start() -> Result<DefaultTerminal> {
     let mut terminal = ratatui::init();
     // After a reload the screen still shows the old process's last frame.
     terminal.clear()?;
-    execute!(io::stdout(), EnableMouseCapture, EnableBracketedPaste)?;
+    execute!(
+        io::stdout(),
+        EnableMouseCapture,
+        EnableBracketedPaste,
+        DisableLineWrap
+    )?;
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         stop();
@@ -110,7 +119,12 @@ pub fn start() -> Result<DefaultTerminal> {
 
 /// Gives the terminal back as it was.
 pub fn stop() {
-    let _ = execute!(io::stdout(), DisableMouseCapture, DisableBracketedPaste);
+    let _ = execute!(
+        io::stdout(),
+        DisableMouseCapture,
+        DisableBracketedPaste,
+        EnableLineWrap
+    );
     ratatui::restore();
 }
 
@@ -174,7 +188,7 @@ impl App {
             .map(|r| tilde(r))
             .collect::<Vec<_>>()
             .join("  ");
-        Self {
+        let app = Self {
             feed,
             colors,
             label,
@@ -197,7 +211,10 @@ impl App {
             quit_armed: None,
             ps1: Vec::new(),
             repaint: false,
-        }
+        };
+        // Fetch the prompt now, so it's there the moment `:` is pressed.
+        app.refresh_prompt();
+        app
     }
 
     /// Picks up where a previous difftop left off before it reloaded.
@@ -432,8 +449,11 @@ impl App {
             let frame_block = Block::bordered()
                 .border_type(BorderType::Rounded)
                 .border_style(c.muted)
-                .title(Line::from(" shell ").bold())
-                .title_bottom(Line::from(" Esc leaves · Ctrl-C stops a command ").right_aligned());
+                .title(self.notch("─┐", [("", "shell")], "┌"))
+                .title_bottom(
+                    self.notch("┘", [("esc", " leave"), ("^C", " stop")], "└─")
+                        .right_aligned(),
+                );
             let inner = frame_block.inner(area);
             frame.render_widget(frame_block, area);
             area = inner;
@@ -479,6 +499,34 @@ impl App {
             let y = bottom_area.bottom().saturating_sub(1);
             frame.set_cursor_position((x.min(bottom_area.right().saturating_sub(1)), y));
         }
+    }
+
+    /// A btop-style label cut into a border: `┐shell┌`, or for key hints
+    /// `┘esc leave└┘^C stop└`, keys highlighted and the rest in border color.
+    fn notch<const N: usize>(
+        &self,
+        open: &'static str,
+        items: [(&'static str, &'static str); N],
+        close: &'static str,
+    ) -> Line<'static> {
+        let c = &self.colors;
+        let key = Style::new().fg(c.accent).add_modifier(Modifier::BOLD);
+        let mut spans = vec![Span::styled(open, c.muted)];
+        for (i, (hotkey, label)) in items.into_iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::styled("└┘", c.muted));
+            }
+            spans.push(Span::styled(hotkey, key));
+            // A label with no key is a title: plain, bold text.
+            let label_style = if hotkey.is_empty() {
+                Style::new().fg(c.foreground).add_modifier(Modifier::BOLD)
+            } else {
+                Style::new().fg(c.foreground)
+            };
+            spans.push(Span::styled(label, label_style));
+        }
+        spans.push(Span::styled(close, c.muted));
+        Line::from(spans)
     }
 
     /// A small notice at the bottom middle of the feed while scrolled back.

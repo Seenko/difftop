@@ -42,6 +42,11 @@ uses [Semantic Versioning](https://semver.org/).
 - The screen could get scrambled (typed keys echoed, rows shifted) while
   the shell prompt was fetched: the prompt's shell took over difftop's
   terminal. It now runs in its own session. `Ctrl-L` redraws the screen.
+- In Windows Terminal the shell-mode frame could push the whole screen up
+  a line (the frame's corner filled the last cell, which made the terminal
+  wrap). difftop now turns line wrapping off while it runs. The frame is
+  also redrawn btop-style, with the title and key hints cut into the
+  border.
 - Right-clicking (which pastes in many terminals) could pause or clear
   the screen, because pasted text was read as keypresses.
 

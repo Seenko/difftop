@@ -130,10 +130,13 @@ aren't carried over; the new process rescans.
 `Saved` uses `#[serde(default)]`, so a version that adds fields can still
 read an older save. Keep new fields defaultable.
 
-**Input.** `ui::start` turns on mouse reporting, so the wheel can scroll,
-and bracketed paste. Many terminals paste on right-click; without
+**Terminal setup.** `ui::start` turns off line wrapping. Otherwise,
+drawing the bottom-right cell makes some terminals (Windows Terminal, via
+ConPTY) scroll by one line, and from then on the real screen no longer
+matches what ratatui thinks it drew. It also turns on mouse reporting, so
+the wheel can scroll, and bracketed paste. Many terminals paste on right-click; without
 bracketed paste, the pasted text would arrive as keypresses and could
-pause or clear the screen. `ui::stop` undoes both, and a panic hook calls
+pause or clear the screen. `ui::stop` undoes all three, and a panic hook calls
 it too, so a crash never leaves the terminal in mouse mode.
 
 ## Decisions and why
