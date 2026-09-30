@@ -66,6 +66,7 @@ difftop --help            # everything else
 | `c`                    | clear the screen                       |
 | `:` or `!`             | open the shell prompt                  |
 | `q` / `Ctrl-C`         | quit                                   |
+| `Ctrl-L`               | redraw the screen                      |
 | `Esc` `Esc`            | quit (the first press asks to confirm) |
 
 The ones you wouldn't guess are listed at the bottom of the screen.

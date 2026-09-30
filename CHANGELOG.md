@@ -39,6 +39,9 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The screen could get scrambled (typed keys echoed, rows shifted) while
+  the shell prompt was fetched: the prompt's shell took over difftop's
+  terminal. It now runs in its own session. `Ctrl-L` redraws the screen.
 - Right-clicking (which pastes in many terminals) could pause or clear
   the screen, because pasted text was read as keypresses.
 

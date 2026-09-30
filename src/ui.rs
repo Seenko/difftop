@@ -86,6 +86,8 @@ pub struct App {
     history_pos: Option<usize>,
     /// When Esc was pressed once, asking for a second one to quit.
     quit_armed: Option<Instant>,
+    /// Set by Ctrl-L: redraw the whole screen on the next frame.
+    repaint: bool,
     /// The user's own shell prompt; empty until their shell has answered.
     ps1: Vec<Line<'static>>,
 }
@@ -132,6 +134,9 @@ pub fn run(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) -> R
             app.reload();
         }
 
+        if std::mem::take(&mut app.repaint) {
+            terminal.clear()?;
+        }
         terminal.draw(|frame| app.draw(frame))?;
 
         if event::poll(FRAME)? {
@@ -191,6 +196,7 @@ impl App {
             history_pos: None,
             quit_armed: None,
             ps1: Vec::new(),
+            repaint: false,
         }
     }
 
@@ -235,6 +241,12 @@ impl App {
     }
 
     fn on_key(&mut self, key: KeyEvent) -> ControlFlow<()> {
+        // Ctrl-L repaints everything, as in any terminal, in case something
+        // outside difftop scribbled on the screen.
+        if key.code == KeyCode::Char('l') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.repaint = true;
+            return ControlFlow::Continue(());
+        }
         if self.input.is_some() {
             return self.on_input_key(key);
         }

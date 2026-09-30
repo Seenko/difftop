@@ -25,8 +25,10 @@ pub fn render(cwd: &Path) -> Option<String> {
         "fish" => ("-c", "fish_prompt"),
         _ => return None,
     };
-    let out = Command::new(&shell)
-        .args([flags, script])
+    // `setsid`: its own session, with no terminal. An interactive shell
+    // started in ours would take over difftop's terminal for job control.
+    let out = Command::new("setsid")
+        .args([shell.as_str(), flags, script])
         .current_dir(cwd)
         .stdin(Stdio::null())
         // Interactive shells without a terminal complain about job control.

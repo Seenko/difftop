@@ -146,6 +146,12 @@ it too, so a crash never leaves the terminal in mouse mode.
   diffed.** Hiding binary or large files would make the display lie about
   what's happening. Ignore rules (`.gitignore`, hidden files, `.git`) are
   the only thing that keeps a file off the screen.
+- **Every shell difftop starts gets its own session (`setsid`).** An
+  interactive shell started inside difftop's session takes over difftop's
+  terminal for job control: it becomes the terminal's foreground process
+  group and can switch keyboard echo back on, which scrambles the screen.
+  `shell` runs commands with `setsid --ctty` on their own PTY; `prompt` uses
+  plain `setsid`, so its shell has no terminal at all.
 - **Removed lines are not syntax-highlighted.** They're shown dimmed in the
   "removed" color. This is easier to read at a glance and means only one
   version of the file ever needs highlighting.
