@@ -62,10 +62,11 @@ difftop --help            # everything else
 | `PgUp` `PgDn`          | scroll a page                          |
 | `Home` / `End`         | jump to the oldest line / follow again |
 | `+` / `-`              | faster / slower                        |
+| wheel over the speed   | faster / slower, in finer steps        |
 | `c`                    | clear the screen                       |
 | `q` / `Esc`            | quit                                   |
 
-All shortcuts are always listed at the bottom of the screen.
+The ones you wouldn't guess are listed at the bottom of the screen.
 
 You can scroll back at any time. While you're scrolled back, the view stays
 put and new changes keep arriving below it. A notice at the bottom shows

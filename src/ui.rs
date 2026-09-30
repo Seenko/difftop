@@ -24,6 +24,9 @@ use crate::theme::UiColors;
 const FRAME: Duration = Duration::from_millis(33);
 /// Lines moved per mouse-wheel notch.
 const WHEEL: isize = 3;
+/// Speed change per `+`/`-` press, and per wheel notch over the speed display.
+const KEY_SPEED_STEP: f64 = 1.5;
+const WHEEL_SPEED_STEP: f64 = 1.2;
 
 /// What the watcher thread sends to the screen.
 pub enum Msg {
@@ -43,6 +46,8 @@ pub struct App {
     height: usize,
     /// Where the "follow" toast was drawn, so a click on it can be recognised.
     toast: Option<Rect>,
+    /// Where the speed was drawn, so the wheel over it changes the speed.
+    speed: Option<Rect>,
 }
 
 /// Takes over the terminal. Mouse reporting makes the wheel scroll, and
@@ -105,6 +110,7 @@ impl App {
             warning: None,
             height: 0,
             toast: None,
+            speed: None,
         }
     }
 
@@ -122,8 +128,8 @@ impl App {
             KeyCode::PageDown => self.feed.scroll(-page, self.height),
             KeyCode::Home | KeyCode::Char('g') => self.feed.scroll(isize::MAX, self.height),
             KeyCode::End | KeyCode::Char('G') => self.feed.follow(),
-            KeyCode::Char('+') | KeyCode::Char('=') => self.feed.speed *= 1.5,
-            KeyCode::Char('-') => self.feed.speed = (self.feed.speed / 1.5).max(1.0),
+            KeyCode::Char('+') | KeyCode::Char('=') => self.change_speed(KEY_SPEED_STEP),
+            KeyCode::Char('-') => self.change_speed(1.0 / KEY_SPEED_STEP),
             KeyCode::Char('c') => self.feed.clear(),
             _ => {}
         }
@@ -132,15 +138,17 @@ impl App {
 
     fn on_mouse(&mut self, mouse: MouseEvent) -> ControlFlow<()> {
         match mouse.kind {
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown if hit(self.speed, mouse) => {
+                let up = mouse.kind == MouseEventKind::ScrollUp;
+                self.change_speed(if up {
+                    WHEEL_SPEED_STEP
+                } else {
+                    1.0 / WHEEL_SPEED_STEP
+                });
+            }
             MouseEventKind::ScrollUp => self.feed.scroll(WHEEL, self.height),
             MouseEventKind::ScrollDown => self.feed.scroll(-WHEEL, self.height),
-            MouseEventKind::Down(MouseButton::Left)
-                if self
-                    .toast
-                    .is_some_and(|t| t.contains(Position::new(mouse.column, mouse.row))) =>
-            {
-                self.feed.follow();
-            }
+            MouseEventKind::Down(MouseButton::Left) if hit(self.toast, mouse) => self.feed.follow(),
             // Everything else, right-click included, is ignored.
             _ => {}
         }
@@ -183,7 +191,7 @@ impl App {
         frame.render_widget(Paragraph::new(rows), feed_area);
 
         self.toast = (!following).then(|| self.draw_toast(frame, feed_area));
-        self.draw_info(frame, info_area);
+        self.speed = Some(self.draw_info(frame, info_area));
         frame.render_widget(Paragraph::new(keys), keys_area);
     }
 
@@ -208,9 +216,15 @@ impl App {
     }
 
     /// What's watched on the left, how it's going on the right.
-    fn draw_info(&self, frame: &mut Frame, area: Rect) {
+    /// Multiplies the speed by `factor`, never going below one line a second.
+    fn change_speed(&mut self, factor: f64) {
+        self.feed.speed = (self.feed.speed * factor).max(1.0);
+    }
+
+    /// Returns where the speed was drawn.
+    fn draw_info(&self, frame: &mut Frame, area: Rect) -> Rect {
         let c = &self.colors;
-        let status = self.status();
+        let (status, speed_width) = self.status();
         let status_width = status.width() as u16;
         let [label_area, status_area] =
             Layout::horizontal([Constraint::Fill(1), Constraint::Length(status_width)]).areas(area);
@@ -226,10 +240,16 @@ impl App {
         };
         frame.render_widget(label, label_area);
         frame.render_widget(status, status_area);
+        Rect {
+            x: status_area.right().saturating_sub(speed_width),
+            width: speed_width.min(status_area.width),
+            ..status_area
+        }
     }
 
     /// Right side of the info line, most important first.
-    fn status(&self) -> Line<'static> {
+    /// Also returns the width of the speed, which is always last.
+    fn status(&self) -> (Line<'static>, u16) {
         let mut parts = Vec::new();
         if self.feed.paused {
             parts.push("paused".to_string());
@@ -245,19 +265,20 @@ impl App {
         if self.feed.dropped > 0 {
             parts.push(format!("{} skipped", self.feed.dropped));
         }
-        parts.push(format!("{:.0}/s ", self.feed.speed));
-        Line::from(Span::styled(parts.join(" · "), self.colors.muted))
+        let speed = format!("{:.0}/s ", self.feed.speed);
+        let width = speed.chars().count() as u16;
+        parts.push(speed);
+        let line = Line::from(Span::styled(parts.join(" · "), self.colors.muted));
+        (line, width)
     }
 
-    /// Every shortcut, wrapped onto as many lines as `width` needs.
+    /// The shortcuts nobody would guess, wrapped onto as many lines as `width` needs.
     fn keys(&self, width: u16) -> Vec<Line<'static>> {
         let pause = if self.feed.paused { "resume" } else { "pause" };
+        // Scrolling keys are left out on purpose: arrows, PgUp/PgDn, Home/End
+        // and the wheel do what everyone expects, and the toast names End.
         let keys = [
             ("space", pause),
-            ("↑↓/wheel", "scroll"),
-            ("PgUp/PgDn", "page"),
-            ("Home", "top"),
-            ("End", "follow"),
             ("+/-", "speed"),
             ("c", "clear"),
             ("q", "quit"),
@@ -279,6 +300,11 @@ impl App {
             })
             .collect()
     }
+}
+
+/// Whether the mouse is over `area`.
+fn hit(area: Option<Rect>, mouse: MouseEvent) -> bool {
+    area.is_some_and(|a| a.contains(Position::new(mouse.column, mouse.row)))
 }
 
 /// Packs items of the given widths into rows no wider than `width`, in

@@ -12,7 +12,9 @@ uses [Semantic Versioning](https://semver.org/).
 - Scroll back through history (arrow keys, PgUp/PgDn, Home, mouse wheel)
   while changes keep arriving. A toast shows how many newer lines there
   are; press `End` or click it to follow again.
-- Every shortcut is listed at the bottom of the screen, wrapping in narrow panes.
+- Scrolling the mouse wheel over the speed display (`30/s`) changes the speed.
+- The main shortcuts (pause, speed, clear, quit) are listed at the bottom of
+  the screen, wrapping in narrow panes.
 
 ### Fixed
 
