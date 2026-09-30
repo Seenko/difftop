@@ -21,12 +21,11 @@ use ratatui::{DefaultTerminal, Frame};
 
 use crate::command;
 use crate::feed::Feed;
-use crate::highlight::clean;
 use crate::reload::{self, Saved, SavedLine, Upgrade};
 use crate::render::tilde;
-use crate::shell;
 use crate::theme::UiColors;
 use crate::watch;
+use crate::{ansi, prompt, shell};
 
 /// About 30 frames per second: smooth enough, and cheap when idle.
 const FRAME: Duration = Duration::from_millis(33);
@@ -43,9 +42,13 @@ const WHEEL_SPEED_STEP: f64 = 1.2;
 /// What the watcher thread sends to the screen.
 pub enum Msg {
     Lines(Vec<Line<'static>>),
-    Ready { files: usize },
+    Ready {
+        files: usize,
+    },
     Warning(String),
     Shell(shell::Output),
+    /// The user's prompt, rendered by their shell (see `prompt`).
+    Prompt(Option<String>),
 }
 
 pub struct App {
@@ -81,6 +84,8 @@ pub struct App {
     history_pos: Option<usize>,
     /// When Esc was pressed once, asking for a second one to quit.
     quit_armed: Option<Instant>,
+    /// The user's own shell prompt; empty until their shell has answered.
+    ps1: Vec<Line<'static>>,
 }
 
 /// Takes over the terminal. Mouse reporting makes the wheel scroll, and
@@ -114,6 +119,7 @@ pub fn run(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) -> R
                 Msg::Ready { files } => app.files = Some(files),
                 Msg::Warning(text) => app.warning = Some(text),
                 Msg::Shell(out) => app.on_shell(out),
+                Msg::Prompt(ps1) => app.ps1 = ps1.as_deref().map(ansi::lines).unwrap_or_default(),
             }
         }
         let now = Instant::now();
@@ -134,7 +140,7 @@ pub fn run(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) -> R
                 // else a paste (a right-click in many terminals) is ignored.
                 Event::Paste(text) => {
                     if let Some(input) = &mut app.input {
-                        input.push_str(text.trim_end_matches(['\n', '\r']));
+                        input.extend(text.chars().filter(|c| !c.is_control()));
                     }
                     ControlFlow::Continue(())
                 }
@@ -181,6 +187,7 @@ impl App {
             history: Vec::new(),
             history_pos: None,
             quit_armed: None,
+            ps1: Vec::new(),
         }
     }
 
@@ -247,7 +254,10 @@ impl App {
             KeyCode::Esc if quit_armed => return ControlFlow::Break(()),
             KeyCode::Esc => self.quit_armed = Some(Instant::now()),
             KeyCode::Char('q') => return ControlFlow::Break(()),
-            KeyCode::Char(':') | KeyCode::Char('!') => self.input = Some(String::new()),
+            KeyCode::Char(':') | KeyCode::Char('!') => {
+                self.input = Some(String::new());
+                self.refresh_prompt();
+            }
             KeyCode::Char(' ') => self.feed.paused = !self.feed.paused,
             KeyCode::Up | KeyCode::Char('k') => self.feed.scroll(1, self.height),
             KeyCode::Down | KeyCode::Char('j') => self.feed.scroll(-1, self.height),
@@ -321,12 +331,9 @@ impl App {
             return;
         }
         let cwd = std::env::current_dir().unwrap_or_default();
-        let prompt = Line::from(vec![
-            Span::styled(self.prompt(), Style::new().fg(self.colors.accent)),
-            Span::styled(clean(&line), Style::new().add_modifier(Modifier::BOLD)),
-        ]);
         self.feed.follow();
-        self.feed.show_now([Line::default(), prompt]);
+        self.feed.show_now([Line::default()]);
+        self.feed.show_now(self.prompt_with(&line));
         let tx = self.tx.clone();
         match shell::run(&line, &cwd, self.previous.as_deref(), move |out| {
             let _ = tx.send(Msg::Shell(out));
@@ -339,7 +346,7 @@ impl App {
     /// Shows shell output as it comes, and follows the shell if it `cd`ed.
     fn on_shell(&mut self, out: shell::Output) {
         match out {
-            shell::Output::Line(text) => self.feed.show_now([Line::raw(clean(&text))]),
+            shell::Output::Line(text) => self.feed.show_now(ansi::lines(&text)),
             shell::Output::Done { code, cwd } => {
                 self.running = None;
                 let ending = match code {
@@ -355,6 +362,8 @@ impl App {
                 if let Some(Err(err)) = moved.map(|dir| self.cd(dir)) {
                     self.notice = Some((err, Instant::now()));
                 }
+                // The prompt may show the folder, git branch, last status...
+                self.refresh_prompt();
             }
         }
     }
@@ -401,13 +410,7 @@ impl App {
             area,
         );
         let keys = match &self.input {
-            Some(input) => vec![Line::from(vec![
-                Span::styled(
-                    self.prompt(),
-                    Style::new().fg(c.accent).add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(input.clone()),
-            ])],
+            Some(input) => self.prompt_with(input),
             None => self.keys(area.width),
         };
         let [feed_area, info_area, keys_area] = Layout::vertical([
@@ -439,11 +442,11 @@ impl App {
 
         self.toast = (!following).then(|| self.draw_toast(frame, feed_area));
         self.speed = Some(self.draw_info(frame, info_area));
-        frame.render_widget(Paragraph::new(keys), keys_area);
-        if let Some(input) = &self.input {
-            let typed = self.prompt().chars().count() + input.chars().count();
-            let x = keys_area.x + typed as u16;
-            frame.set_cursor_position((x.min(keys_area.right().saturating_sub(1)), keys_area.y));
+        frame.render_widget(Paragraph::new(keys.clone()), keys_area);
+        if self.input.is_some() {
+            let x = keys_area.x + keys.last().map_or(0, Line::width) as u16;
+            let y = keys_area.bottom().saturating_sub(1);
+            frame.set_cursor_position((x.min(keys_area.right().saturating_sub(1)), y));
         }
     }
 
@@ -467,10 +470,28 @@ impl App {
         area
     }
 
-    /// ` ~/proj ❯ `: where commands run, shortened to leave room for typing.
-    fn prompt(&self) -> String {
-        let cwd = std::env::current_dir().unwrap_or_default();
-        format!(" {} ❯ ", tail(&tilde(&cwd), 30))
+    /// The prompt followed by `typed`, as the user's shell shows it. Until
+    /// (or unless) their shell has told us its prompt: a plain `~/proj ❯ `.
+    fn prompt_with(&self, typed: &str) -> Vec<Line<'static>> {
+        let mut lines = if self.ps1.is_empty() {
+            let cwd = std::env::current_dir().unwrap_or_default();
+            vec![Line::from(vec![
+                Span::styled(tail(&tilde(&cwd), 30), self.colors.muted),
+                Span::raw(" ❯ "),
+            ])]
+        } else {
+            self.ps1.clone()
+        };
+        let last = lines.last_mut().expect("never empty");
+        last.spans.push(Span::raw(typed.to_string()));
+        lines
+    }
+
+    /// Asks the user's shell for its prompt in the current folder, in the
+    /// background; the answer arrives as [`Msg::Prompt`].
+    fn refresh_prompt(&self) {
+        let (tx, cwd) = (self.tx.clone(), std::env::current_dir().unwrap_or_default());
+        std::thread::spawn(move || tx.send(Msg::Prompt(prompt::render(&cwd))));
     }
 
     /// Multiplies the speed by `factor`, never going below one line a second.
@@ -495,10 +516,8 @@ impl App {
             .is_some_and(|at| at.elapsed() < QUIT_CONFIRM);
         let label = match notice.map(|(text, _)| text).or(self.warning.as_ref()) {
             _ if quitting => Line::from(Span::styled(
-                " Press Esc again to quit difftop ",
-                Style::new()
-                    .fg(c.removed)
-                    .add_modifier(Modifier::REVERSED | Modifier::BOLD),
+                " Press Esc again to quit difftop",
+                Style::new().fg(c.removed).add_modifier(Modifier::BOLD),
             )),
             Some(warning) => Line::styled(format!(" {warning}"), Style::new().fg(c.removed)),
             None => Line::styled(

@@ -19,13 +19,19 @@ uses [Semantic Versioning](https://semver.org/).
 - A shell prompt (`:` or `!`): run any command, see its output in the
   feed as it runs, stop it with `Ctrl-C`. When a command changes directory,
   difftop follows and watches the new folder. History with `↑`/`↓`, Tab
-  completion, paste.
+  completion, paste. The prompt is your own shell's (PS1, starship, ...),
+  and colored output keeps its colors.
 
 - Hot reload: replacing the difftop binary makes every running difftop
   switch to the new version within seconds, keeping history, scroll
   position, speed, pause and the watched folder.
 
 ### Changed
+
+- Much lower memory use: file text kept for diffing is capped at 16 MiB,
+  most recently modified files first (watching a home folder went from
+  ~290 MB to ~50 MB; a project stays around 10 MB).
+- Softer colors for the quit warning.
 
 - Quitting with `Esc` takes two presses; the first shows "Press Esc again
   to quit difftop". `q` still quits at once.

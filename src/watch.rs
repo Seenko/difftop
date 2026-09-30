@@ -25,10 +25,10 @@ use crate::filter::Filter;
 
 /// Files bigger than this are tracked by size instead of diffed.
 const MAX_FILE_SIZE: u64 = 1024 * 1024;
-/// How much file content the startup scan may keep in memory.
-// ponytail: text files beyond the budget show a size change on their first
-// edit and are diffed after that; add eviction if memory ever matters more.
-const STARTUP_BUDGET: usize = 256 * 1024 * 1024;
+/// How much file text is kept in memory for diffing, in total. The most
+/// recently modified files get it first; a file without its text still shows
+/// up when it changes (as a size change) and is diffed from then on.
+const TEXT_BUDGET: usize = 16 * 1024 * 1024;
 /// Events are collected until the folder has been quiet this long...
 const QUIET: Duration = Duration::from_millis(50);
 /// ...or this much time has passed, so a constantly written file still shows up.
@@ -188,6 +188,7 @@ impl State {
     /// announced as created (a folder appeared at runtime); without, they are
     /// silently remembered (startup).
     fn scan(&mut self, dir: &Path, report: bool, emit: &mut impl FnMut(Event)) {
+        let mut found = Vec::new();
         let mut stack = vec![dir.to_path_buf()];
         while let Some(dir) = stack.pop() {
             if !self.watched.insert(dir.clone()) {
@@ -211,13 +212,18 @@ impl State {
                     if report {
                         self.update(path, emit);
                     } else if let Ok(meta) = entry.metadata() {
-                        let read = self.cached_bytes < STARTUP_BUDGET;
-                        let snapshot = Snapshot::take(&path, &meta, read);
-                        self.cached_bytes += snapshot.text.as_ref().map_or(0, String::len);
-                        self.cache.insert(path, snapshot);
+                        found.push((path, meta));
                     }
                 }
             }
+        }
+
+        // Newest first: the files most likely to be edited next get their
+        // text remembered while the budget lasts.
+        found.sort_by_key(|(_, meta)| std::cmp::Reverse(meta.modified().ok()));
+        for (path, meta) in found {
+            let snapshot = Snapshot::take(&path, &meta, self.cached_bytes < TEXT_BUDGET);
+            self.remember(path, snapshot);
         }
     }
 
@@ -231,7 +237,7 @@ impl State {
 
         let Ok(meta) = fs::symlink_metadata(&path) else {
             self.watched.remove(&path);
-            if let Some(before) = self.cache.remove(&path) {
+            if let Some(before) = self.forget(&path) {
                 emit(change(
                     path,
                     ChangeKind::Deleted,
@@ -251,7 +257,7 @@ impl State {
             return;
         }
         let after = Snapshot::take(&path, &meta, true);
-        match self.cache.insert(path.clone(), after.clone()) {
+        match self.remember(path.clone(), after.clone()) {
             Some(before) if before.same_as(&after) => {}
             Some(before) => emit(change(path, ChangeKind::Modified, before, after)),
             None => emit(change(
@@ -260,6 +266,46 @@ impl State {
                 Snapshot::default(),
                 after,
             )),
+        }
+    }
+
+    /// Stores what we know about a file, keeping the text within budget.
+    /// Returns what was known before.
+    fn remember(&mut self, path: PathBuf, snapshot: Snapshot) -> Option<Snapshot> {
+        self.cached_bytes += text_len(&snapshot);
+        let old = self.cache.insert(path, snapshot);
+        self.cached_bytes -= old.as_ref().map_or(0, text_len);
+        if self.cached_bytes > TEXT_BUDGET {
+            self.evict();
+        }
+        old
+    }
+
+    fn forget(&mut self, path: &Path) -> Option<Snapshot> {
+        let old = self.cache.remove(path);
+        self.cached_bytes -= old.as_ref().map_or(0, text_len);
+        old
+    }
+
+    /// Drops the text of the files that changed longest ago until the cache
+    /// is comfortably under budget. Their size and time are kept.
+    // ponytail: sorts every cached file per eviction; evictions are rare
+    // since each frees a quarter of the budget.
+    fn evict(&mut self) {
+        let mut oldest: Vec<(Option<SystemTime>, PathBuf)> = self
+            .cache
+            .iter()
+            .filter(|(_, s)| s.text.is_some())
+            .map(|(path, s)| (s.modified, path.clone()))
+            .collect();
+        oldest.sort();
+        for (_, path) in oldest {
+            if self.cached_bytes <= TEXT_BUDGET / 4 * 3 {
+                break;
+            }
+            if let Some(text) = self.cache.get_mut(&path).and_then(|s| s.text.take()) {
+                self.cached_bytes -= text.len();
+            }
         }
     }
 
@@ -286,6 +332,10 @@ fn change(path: PathBuf, kind: ChangeKind, before: Snapshot, after: Snapshot) ->
         before,
         after,
     })
+}
+
+fn text_len(snapshot: &Snapshot) -> usize {
+    snapshot.text.as_ref().map_or(0, String::len)
 }
 
 /// The file's content if it is small, valid UTF-8 and not binary.
@@ -424,5 +474,33 @@ mod tests {
         assert_eq!(change.path, new.join("b.txt"));
         assert_eq!(change.kind, ChangeKind::Modified);
         assert!(rx.recv_timeout(Duration::from_millis(400)).is_err());
+    }
+
+    #[test]
+    fn text_budget_drops_the_oldest_texts_first() {
+        let tmp = tempfile::tempdir().unwrap();
+        let options = Options {
+            roots: vec![tmp.path().to_path_buf()],
+            hidden: false,
+            gitignore: true,
+        };
+        let (tx, _rx) = mpsc::channel();
+        let mut state = State::start(&options, &tx, &mut |_| {}).unwrap();
+        let six_mib = "x".repeat(6 * 1024 * 1024);
+        let file = |age_secs: u64| Snapshot {
+            size: six_mib.len() as u64,
+            text: Some(six_mib.clone()),
+            modified: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_000 - age_secs)),
+        };
+        state.remember("old".into(), file(30));
+        state.remember("mid".into(), file(20));
+        state.remember("new".into(), file(10)); // 18 MiB: over budget
+
+        let has_text = |name: &str| state.cache[Path::new(name)].text.is_some();
+        assert!(!has_text("old") && has_text("mid") && has_text("new"));
+        assert_eq!(state.cache[Path::new("old")].size, six_mib.len() as u64);
+        assert_eq!(state.cached_bytes, 12 * 1024 * 1024);
+        state.forget(Path::new("new"));
+        assert_eq!(state.cached_bytes, 6 * 1024 * 1024);
     }
 }

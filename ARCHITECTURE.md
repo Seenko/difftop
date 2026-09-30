@@ -33,6 +33,8 @@ it is for. Start there.
 | `main.rs`      | Parses flags, wires the two threads together.                       | yes                    |
 | `shell.rs`     | Runs prompt lines in bash, streams output, reports the final cwd.   | no                     |
 | `command.rs`   | Tab completion for the prompt.                                      | no                     |
+| `prompt.rs`    | Asks the user's shell to render its own prompt (`${PS1@P}` etc).    | no                     |
+| `ansi.rs`      | Color codes (SGR) → styled lines; drops every other escape.         | spans only             |
 | `cli.rs`       | Every command-line flag. `--help` text comes from its doc comments. | no                     |
 | `watch.rs`     | Watcher thread: inotify, batching, file cache, emits `Change`s.     | no                     |
 | `filter.rs`    | Which paths are ignored (`.gitignore`, hidden, `.git`).             | no                     |
@@ -56,8 +58,11 @@ it is for. Start there.
    change. `Access` events are dropped, because reading a file ourselves
    would otherwise trigger a new event and loop.
 3. **Compare** (`watch::State::update`). The cache holds a `Snapshot` of
-   every file: its size, modification time, and its text if it's small
-   UTF-8 text. Text files are compared by content. Everything else is
+   every file: its size, its modification time, and, within a 16 MiB total
+   budget, its text if it's small UTF-8 text. The startup scan gives the
+   budget to the most recently modified files first. When the budget fills
+   up later, the texts of the files that changed longest ago are dropped
+   (`State::evict`). Text files are compared by content. Everything else is
    compared by size and modification time. The result is a `Created`,
    `Modified` or `Deleted` change, carrying the snapshots from before and
    after.
@@ -89,7 +94,13 @@ private file (`pwd -P > $DIFFTOP_PWD_FILE`). That's how `cd` is followed
 wherever it appears in the line. stdout and stderr share one pipe, so
 errors land in order. A thread reads the pipe and sends each line to the
 frame loop as `Msg::Shell`. `Feed::show_now` puts them on screen right away
-instead of queueing them behind the animation. The command gets its own
+instead of queueing them behind the animation. The prompt itself comes from the user's shell: `prompt::render` runs an
+interactive `bash`/`zsh`/`fish` that prints its fully expanded prompt, and
+`ansi` turns the color codes into spans. That runs in the background
+whenever the prompt opens and after each command. Until it answers, a
+plain `~/dir ❯` is shown. Command output goes through `ansi` too. It
+renders colors and drops every other escape sequence, so output can't
+control the terminal. The command gets its own
 process group, so `Ctrl-C` (`Running::interrupt`) reaches everything it
 started. When the command ends with a different working directory, `ui`
 calls `App::cd`, which is the switch described next.

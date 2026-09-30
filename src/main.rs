@@ -4,12 +4,14 @@
 //! them ([`watch`] → [`render`]); the main thread animates and draws ([`ui`]).
 //! See ARCHITECTURE.md for the full picture.
 
+mod ansi;
 mod cli;
 mod command;
 mod diff;
 mod feed;
 mod filter;
 mod highlight;
+mod prompt;
 mod reload;
 mod render;
 mod shell;

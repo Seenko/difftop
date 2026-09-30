@@ -77,9 +77,11 @@ again.
 
 ### The built-in shell
 
-Press `:` (or `!`) to get a shell prompt, `~/proj ❯`, without leaving
-difftop. Type any command (`ls`, `git status`, `cargo build`, ...) and its
-output appears in the feed as it runs.
+Press `:` (or `!`) to get a shell prompt without leaving difftop. It's
+*your* prompt: difftop asks your shell (bash, zsh or fish) to draw it, so
+`PS1`, starship and the like look the way they do in your terminal. Type any
+command (`ls`, `git status`, `cargo build`, ...) and its output appears in
+the feed as it runs.
 
 If a command changes directory (`cd ../other`, `cd src && ls`, `cd -`),
 difftop follows. It watches the new folder from then on, and a line in the
@@ -146,10 +148,12 @@ into all carry over. A line in the feed marks the reload.
 - difftop needs one inotify watch per folder. If you watch a huge tree, you
   may hit `fs.inotify.max_user_watches`. difftop shows a warning in the status
   line when that happens.
-- It keeps a copy of every text file in memory, up to 256 MiB at startup,
-  so that the first edit to a file can already be shown as a diff. A text
-  file past that cap shows only its size change the first time it changes,
-  and is diffed normally after that.
+- To diff a file's first edit, difftop needs its text from before. It keeps
+  up to 16 MiB of text, the most recently modified files first. A file
+  outside that shows only its size change the first time it changes, and is
+  diffed normally after that. Watching a project takes about 10 MB of
+  memory; watching a whole home folder with tens of thousands of files,
+  about 50 MB.
 
 ## Contributing
 
