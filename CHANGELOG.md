@@ -9,6 +9,15 @@ uses [Semantic Versioning](https://semver.org/).
 ### Added
 
 - `install.sh`: install the latest release with one `curl ... | sh`.
+- Scroll back through history (arrow keys, PgUp/PgDn, Home, mouse wheel)
+  while changes keep arriving. A toast shows how many newer lines there
+  are; press `End` or click it to follow again.
+- Every shortcut is listed at the bottom of the screen, wrapping in narrow panes.
+
+### Fixed
+
+- Right-clicking (which pastes in many terminals) could pause or clear
+  the screen, because pasted text was read as keypresses.
 
 ## [0.1.0] - 2026-09-29
 

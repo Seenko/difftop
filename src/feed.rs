@@ -1,14 +1,18 @@
 //! The animation: lines queue up and are released onto the screen at a
 //! steady pace, so changes rise instead of appearing all at once.
 //!
+//! It also owns scrolling: the view is either *following* (pinned to the
+//! newest line) or held at a fixed place while new lines keep arriving below.
+//!
 //! This module knows nothing about terminals; it is generic over the line
 //! type so it can be tested with plain numbers.
 
 use std::collections::VecDeque;
 use std::time::Duration;
 
-/// Lines kept after they scrolled off the top. More than any screen is tall.
-const MAX_SHOWN: usize = 1000;
+/// Lines kept after they scrolled off the top, so there is history to scroll
+/// back through.
+const MAX_SHOWN: usize = 10_000;
 /// Queued lines beyond this are dropped (oldest first) and counted.
 const MAX_PENDING: usize = 5000;
 
@@ -22,6 +26,8 @@ pub struct Feed<T> {
     pub paused: bool,
     /// Total lines dropped because the queue overflowed.
     pub dropped: usize,
+    /// How many lines sit below the view; 0 means following the newest line.
+    offset: usize,
 }
 
 impl<T> Feed<T> {
@@ -33,6 +39,7 @@ impl<T> Feed<T> {
             speed,
             paused: false,
             dropped: 0,
+            offset: 0,
         }
     }
 
@@ -60,15 +67,38 @@ impl<T> Feed<T> {
             };
             self.shown.push_back(line);
             self.budget -= 1.0;
+            // Keep a scrolled view still while lines arrive below it.
+            if self.offset > 0 {
+                self.offset += 1;
+            }
         }
         while self.shown.len() > MAX_SHOWN {
             self.shown.pop_front();
         }
+        self.offset = self.offset.min(self.shown.len());
     }
 
-    /// The newest `n` released lines, oldest first (top of the screen first).
-    pub fn newest(&self, n: usize) -> impl Iterator<Item = &T> {
-        self.shown.iter().skip(self.shown.len().saturating_sub(n))
+    /// The `height` lines in view, top of the screen first.
+    pub fn view(&self, height: usize) -> impl Iterator<Item = &T> {
+        let end = self.shown.len() - self.offset;
+        self.shown.range(end.saturating_sub(height)..end)
+    }
+
+    /// Scrolls towards older lines (positive `lines`) or newer ones
+    /// (negative), for a view `height` lines tall. Scrolling back down to the
+    /// newest line resumes following.
+    pub fn scroll(&mut self, lines: isize, height: usize) {
+        let top = self.shown.len().saturating_sub(height);
+        self.offset = self.offset.saturating_add_signed(lines).min(top);
+    }
+
+    pub fn follow(&mut self) {
+        self.offset = 0;
+    }
+
+    /// Lines newer than the view; 0 while following.
+    pub fn below(&self) -> usize {
+        self.offset
     }
 
     pub fn queued(&self) -> usize {
@@ -77,6 +107,7 @@ impl<T> Feed<T> {
 
     pub fn clear(&mut self) {
         self.shown.clear();
+        self.offset = 0;
     }
 }
 
@@ -93,7 +124,7 @@ mod tests {
         // rate = 10 + 20 / 2 = 20 lines in the first second
         feed.tick(SECOND);
         assert_eq!(feed.queued(), 0);
-        assert_eq!(feed.newest(3).copied().collect::<Vec<_>>(), [17, 18, 19]);
+        assert_eq!(feed.view(3).copied().collect::<Vec<_>>(), [17, 18, 19]);
     }
 
     #[test]
@@ -115,7 +146,7 @@ mod tests {
         feed.paused = true;
         feed.tick(SECOND * 10);
         assert_eq!(feed.queued(), 5);
-        assert_eq!(feed.newest(10).count(), 0);
+        assert_eq!(feed.view(10).count(), 0);
     }
 
     #[test]
@@ -125,7 +156,48 @@ mod tests {
         assert_eq!(feed.queued(), MAX_PENDING);
         assert_eq!(feed.dropped, 7);
         feed.tick(SECOND * 60);
-        assert_eq!(feed.newest(1).next(), Some(&(MAX_PENDING + 6)));
-        assert_eq!(feed.newest(usize::MAX).count(), MAX_SHOWN);
+        assert_eq!(feed.view(1).next(), Some(&(MAX_PENDING + 6)));
+        assert_eq!(feed.view(usize::MAX).count(), MAX_PENDING);
+    }
+
+    fn view(feed: &Feed<usize>, height: usize) -> Vec<usize> {
+        feed.view(height).copied().collect()
+    }
+
+    #[test]
+    fn scrolled_view_holds_still_while_lines_arrive() {
+        let mut feed = Feed::new(10.0);
+        feed.push(0..10);
+        feed.tick(SECOND);
+        feed.scroll(2, 3);
+        assert_eq!(view(&feed, 3), [5, 6, 7]);
+        assert_eq!(feed.below(), 2);
+
+        feed.push(10..14);
+        feed.tick(SECOND);
+        assert_eq!(view(&feed, 3), [5, 6, 7]);
+        assert_eq!(feed.below(), 6);
+
+        feed.follow();
+        assert_eq!(view(&feed, 3), [11, 12, 13]);
+    }
+
+    #[test]
+    fn scrolling_stops_at_both_ends() {
+        let mut feed = Feed::new(10.0);
+        feed.push(0..10);
+        feed.tick(SECOND);
+        feed.scroll(100, 3);
+        assert_eq!(view(&feed, 3), [0, 1, 2]);
+        feed.scroll(-100, 3);
+        assert_eq!(feed.below(), 0);
+        assert_eq!(view(&feed, 3), [7, 8, 9]);
+
+        // Fewer lines than the screen: nothing to scroll.
+        let mut short = Feed::new(10.0);
+        short.push(0..2);
+        short.tick(SECOND);
+        short.scroll(5, 3);
+        assert_eq!(short.below(), 0);
     }
 }

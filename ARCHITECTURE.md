@@ -38,8 +38,8 @@ it is for. Start there.
 | `highlight.rs` | Text → colored spans, using bat's syntax definitions.               | spans only             |
 | `theme.rs`     | Finding/loading themes (bundled, `.tmTheme`, base16), `UiColors`.   | colors only            |
 | `render.rs`    | A `Change` → the lines shown for it (header, gutter, cutoff).       | yes                    |
-| `feed.rs`      | The animation: queue, pacing, what's visible. Generic, pure.        | no                     |
-| `ui.rs`        | Frame loop, drawing, fade, footer, keys.                            | yes                    |
+| `feed.rs`      | The animation: queue, pacing, scrolling, what's visible. Pure.      | no                     |
+| `ui.rs`        | Terminal setup, frame loop, drawing, keys, mouse, toast.            | yes                    |
 
 ## How a change travels
 
@@ -71,6 +71,20 @@ it is for. Start there.
    of 5,000 lines still drains within a few seconds.
 6. **Draw** (`ui::App::draw`). The newest lines are pinned to the bottom of
    the screen, and the top third is dimmed so older lines fade out.
+
+**Scrolling.** `Feed` keeps the last 10,000 lines and an `offset`, which is
+the number of lines below the view. An offset of 0 means following the
+newest line. While the offset is above 0, every released line increases it
+by one, so the view holds still as new lines arrive underneath. `ui`
+dims nothing while scrolled, and it shows a toast with the number of
+newer lines. The toast's position is remembered so a click on it can
+resume following.
+
+**Input.** `ui::start` turns on mouse reporting, so the wheel can scroll,
+and bracketed paste. Many terminals paste on right-click; without
+bracketed paste, the pasted text would arrive as keypresses and could
+pause or clear the screen. `ui::stop` undoes both, and a panic hook calls
+it too, so a crash never leaves the terminal in mouse mode.
 
 ## Decisions and why
 

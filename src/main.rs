@@ -77,15 +77,9 @@ fn main() -> Result<()> {
         }
     });
 
-    let app = App {
-        feed: feed::Feed::new(args.speed.max(1.0)),
-        colors,
-        label,
-        files: None,
-        warning: None,
-    };
-    let mut terminal = ratatui::init();
+    let app = App::new(feed::Feed::new(args.speed.max(1.0)), colors, label);
+    let mut terminal = ui::start()?;
     let result = ui::run(&mut terminal, app, rx);
-    ratatui::restore();
+    ui::stop();
     result
 }

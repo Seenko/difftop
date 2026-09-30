@@ -55,12 +55,25 @@ difftop --theme dracula   # pick a theme
 difftop --help            # everything else
 ```
 
-| Key            | Action                  |
-| -------------- | ----------------------- |
-| `space` / `p`  | pause / resume          |
-| `+` / `-`      | faster / slower         |
-| `c`            | clear the screen        |
-| `q` / `Esc`    | quit                    |
+| Key                    | Action                                 |
+| ---------------------- | -------------------------------------- |
+| `space`                | pause / resume                         |
+| `↑` `↓` / mouse wheel  | scroll back through history            |
+| `PgUp` `PgDn`          | scroll a page                          |
+| `Home` / `End`         | jump to the oldest line / follow again |
+| `+` / `-`              | faster / slower                        |
+| `c`                    | clear the screen                       |
+| `q` / `Esc`            | quit                                   |
+
+All shortcuts are always listed at the bottom of the screen.
+
+You can scroll back at any time. While you're scrolled back, the view stays
+put and new changes keep arriving below it. A notice at the bottom shows
+how many newer lines there are. Press `End` or click the notice to follow
+again.
+
+difftop uses the mouse for scrolling, so to select text with the mouse,
+hold `Shift` while dragging (most terminals).
 
 What gets watched:
 
