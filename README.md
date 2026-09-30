@@ -27,7 +27,18 @@ released at a steady pace, so they scroll in instead of appearing all at once.
 
 ## Install
 
-Linux only for now. You'll need a Rust toolchain.
+difftop runs on Linux, on x86_64 and arm64.
+
+Prebuilt static binaries are attached to every
+[GitHub release](https://github.com/Seenko/difftop/releases). They work on
+any distro. For example:
+
+```bash
+curl -L https://github.com/Seenko/difftop/releases/latest/download/difftop-x86_64-unknown-linux-musl.tar.gz | tar xz
+sudo mv difftop-x86_64-unknown-linux-musl/difftop /usr/local/bin/
+```
+
+To build from source instead, you need a Rust toolchain:
 
 ```bash
 cargo install --git https://github.com/Seenko/difftop

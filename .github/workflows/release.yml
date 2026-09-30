@@ -30,7 +30,7 @@ jobs:
       - run: cargo build --release --locked --target ${{ matrix.target }}
       - name: Package
         run: |
-          name=difftop-${{ github.ref_name }}-${{ matrix.target }}
+          name=difftop-${{ matrix.target }}
           mkdir "$name"
           cp target/${{ matrix.target }}/release/difftop README.md LICENSE-MIT LICENSE-APACHE "$name"/
           tar -czf "$name.tar.gz" "$name"

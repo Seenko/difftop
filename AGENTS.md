@@ -58,6 +58,19 @@ tmux capture-pane -t dt -p -e            # with colors as escape codes
 tmux kill-session -t dt
 ```
 
+## Releasing
+
+1. Bump `version` in `Cargo.toml`, run `cargo build` so `Cargo.lock` follows.
+2. In `CHANGELOG.md`, rename `Unreleased` to the version and date, and start
+   a fresh `Unreleased` section above it.
+3. Commit (`chore: release v0.2.0`), then tag and push:
+   `git tag v0.2.0 && git push origin main v0.2.0`.
+
+`.github/workflows/release.yml` builds static Linux binaries (x86_64 and
+arm64), refuses to publish if the tag doesn't match `Cargo.toml`, and
+attaches the binaries to a GitHub release. To test the workflow without
+publishing, run it by hand: `gh workflow run release.yml`.
+
 ## Where things usually go
 
 | You want to...                  | Look at                                     |
