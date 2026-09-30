@@ -142,16 +142,21 @@ impl Upgrade {
             self.candidate = now;
             return false;
         }
-        let works = Command::new(&self.path)
+        match Command::new(&self.path)
             .arg("--version")
             .stdin(Stdio::null())
             .output()
-            .is_ok_and(|out| out.status.success());
-        if !works {
-            // Don't keep trying a broken build; wait for the next one.
-            self.current = now;
+        {
+            Ok(out) if out.status.success() => true,
+            // It ran and failed: a broken build. Don't retry it; wait for the next one.
+            Ok(_) => {
+                self.current = now;
+                false
+            }
+            // It couldn't be started right now (e.g. "text file busy" while
+            // something still has it open for writing): try again next check.
+            Err(_) => false,
         }
-        works
     }
 }
 
@@ -261,6 +266,8 @@ mod tests {
 
         install("#!/bin/sh\nexit 0\n");
         assert!(!upgrade.check());
-        assert!(upgrade.check(), "settled and working");
+        // Running a file this process just wrote can briefly fail with "text
+        // file busy" when another test thread forks; that's retried.
+        assert!((0..20).any(|_| upgrade.check()), "settled and working");
     }
 }

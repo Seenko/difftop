@@ -31,6 +31,10 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Brightness now means one thing: changed lines (added and removed) are
+  bright, unchanged context is dim. The fade at the top of the screen,
+  which dimmed lines just for being older, is gone.
+
 - The shell prompt is much snappier: a shell is kept warm with its config
   already loaded, so a command (or a `cd` moving the watch) takes effect in
   about 50 ms instead of ~280 ms with a heavy `.bashrc`.

@@ -77,14 +77,14 @@ it is for. Start there.
    of the queue length per second, so a small change glides in and a burst
    of 5,000 lines still drains within a few seconds.
 6. **Draw** (`ui::App::draw`). The newest lines are pinned to the bottom of
-   the screen, and the top third is dimmed so older lines fade out.
+   the screen. Brightness has one meaning everywhere: changed lines (added,
+   removed) are bright, unchanged context lines are dim.
 
 **Scrolling.** `Feed` keeps the last 10,000 lines and an `offset`, which is
 the number of lines below the view. An offset of 0 means following the
 newest line. While the offset is above 0, every released line increases it
 by one, so the view holds still as new lines arrive underneath. `ui`
-dims nothing while scrolled, and it shows a toast with the number of
-newer lines. The toast's position is remembered so a click on it can
+shows a toast with the number of newer lines. The toast's position is remembered so a click on it can
 resume following.
 
 **Boxes.** Feed entries are `ui::Entry`: a line plus an optional `group`.
@@ -171,7 +171,7 @@ it too, so a crash never leaves the terminal in mouse mode.
   terminal for job control: it becomes the terminal's foreground process
   group and can switch keyboard echo back on, which scrambles the screen.
   `shell` runs its shells with `setsid --ctty` on their own PTY.
-- **Removed lines are not syntax-highlighted.** They're shown dimmed in the
+- **Removed lines are not syntax-highlighted.** They're shown in the
   "removed" color. This is easier to read at a glance and means only one
   version of the file ever needs highlighting.
 - **The `ansi` theme is the default**, because its colors are terminal

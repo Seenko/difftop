@@ -114,13 +114,13 @@ impl Renderer {
                         Style::new().fg(c.added),
                         new_lines[line.index].clone(),
                     ),
+                    // Bright means changed, dim means unchanged.
                     Kind::Context => gutter("  ", c.muted, new_lines[line.index].clone())
                         .patch_style(Style::new().add_modifier(Modifier::DIM)),
                     Kind::Removed => {
                         let text = clean(old_lines[line.index]);
                         let code = vec![Span::styled(text, Style::new().fg(c.removed))];
                         gutter("- ", Style::new().fg(c.removed), code)
-                            .patch_style(Style::new().add_modifier(Modifier::DIM))
                     }
                 };
                 out.push(row);

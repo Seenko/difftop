@@ -21,8 +21,9 @@ editor, a formatter or five coding agents at once.
 +     return f"hi {name}"
 ```
 
-New changes enter at the bottom and push older ones up, and the older ones
-fade as they reach the top. Changes that arrive in a burst are queued and
+New changes enter at the bottom and push older ones up. Brightness means
+one thing: added and removed lines are bright, and the unchanged lines
+around them are dim. Changes that arrive in a burst are queued and
 released at a steady pace, so they scroll in instead of appearing all at once.
 
 ## Install

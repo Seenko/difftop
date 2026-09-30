@@ -476,7 +476,6 @@ impl App {
         );
         // In the shell, the prompt sits in its own box and the status line
         // makes way for it.
-        let in_shell = self.input.is_some();
         let prompt = self.input.as_deref().map(|input| self.prompt_with(input));
         let bottom_height = prompt.as_ref().map_or(1, |lines| lines.len() as u16 + 2);
         let [feed_area, bottom_area] =
@@ -486,7 +485,7 @@ impl App {
         // Shell commands print inside a box: two border columns, two of padding.
         self.width = feed_area.width.saturating_sub(4);
         let following = self.feed.below() == 0;
-        self.draw_feed(frame, feed_area, following && !in_shell);
+        self.draw_feed(frame, feed_area);
 
         self.toast = (!following).then(|| self.draw_toast(frame, feed_area));
         let Some(prompt) = prompt else {
@@ -512,8 +511,7 @@ impl App {
     }
 
     /// The feed, newest line at the bottom, shell commands in their boxes.
-    /// With `fading`, the top third is dimmed.
-    fn draw_feed(&self, frame: &mut Frame, area: Rect, fading: bool) {
+    fn draw_feed(&self, frame: &mut Frame, area: Rect) {
         let entries: Vec<&Entry> = self.feed.view(self.height).collect();
         let pieces = pieces(&entries);
         // Borders take rows too: keep the newest rows that fit.
@@ -530,19 +528,12 @@ impl App {
                 height: 1,
                 ..area
             };
-            let dim = |line: Line<'static>| {
-                if fading && (y - area.y) < area.height / 3 {
-                    line.patch_style(Style::new().add_modifier(Modifier::DIM))
-                } else {
-                    line
-                }
-            };
             match piece {
-                Piece::Plain(line) => frame.render_widget(dim((*line).clone()), row),
-                Piece::Top => frame.render_widget(dim(border("╭", "╮")), row),
-                Piece::Bottom => frame.render_widget(dim(border("╰", "╯")), row),
+                Piece::Plain(line) => frame.render_widget(*line, row),
+                Piece::Top => frame.render_widget(border("╭", "╮"), row),
+                Piece::Bottom => frame.render_widget(border("╰", "╯"), row),
                 Piece::Inside(line) => {
-                    let side = dim(Line::styled("│", self.colors.muted));
+                    let side = Line::styled("│", self.colors.muted);
                     frame.render_widget(side.clone(), Rect { width: 1, ..row });
                     let right = Rect {
                         x: row.right().saturating_sub(1),
@@ -555,7 +546,7 @@ impl App {
                         width: row.width.saturating_sub(4),
                         ..row
                     };
-                    frame.render_widget(dim((*line).clone()), inner);
+                    frame.render_widget(*line, inner);
                 }
             }
         }
