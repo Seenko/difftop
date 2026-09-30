@@ -68,7 +68,8 @@ tmux kill-session -t dt
 
 `.github/workflows/release.yml` builds static Linux binaries (x86_64 and
 arm64), refuses to publish if the tag doesn't match `Cargo.toml`, and
-attaches the binaries to a GitHub release. To test the workflow without
+attaches the bare binaries (`difftop-linux-x86_64`, `difftop-linux-aarch64`)
+to a GitHub release. The README's download link depends on those names. To test the workflow without
 publishing, run it by hand: `gh workflow run release.yml`.
 
 ## Where things usually go

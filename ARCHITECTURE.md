@@ -52,17 +52,19 @@ it is for. Start there.
    often write a file in several steps; batching turns those into one
    change. `Access` events are dropped, because reading a file ourselves
    would otherwise trigger a new event and loop.
-3. **Compare** (`watch::State::update`). The file is read again and compared
-   with the copy in the cache. The result is one of four `ChangeKind`s:
-   - `Created`: the file is new.
-   - `Modified`: the file changed since the cached copy.
-   - `Deleted`: the file is gone.
-   - `FirstSeen`: the file changed, but there was no cached copy to diff
-     against.
-4. **Render** (`render::Renderer`). `diff::hunks` finds the changed lines,
-   `highlight` colors the new file from the top down to the last line needed,
-   and each line gets a `+`, `-` or blank gutter. Every change gets a header
-   and a blank spacer after it.
+3. **Compare** (`watch::State::update`). The cache holds a `Snapshot` of
+   every file: its size, modification time, and its text if it's small
+   UTF-8 text. Text files are compared by content. Everything else is
+   compared by size and modification time. The result is a `Created`,
+   `Modified` or `Deleted` change, carrying the snapshots from before and
+   after.
+4. **Render** (`render::Renderer`). If both sides have text, `diff::hunks`
+   finds the changed lines, `highlight` colors the new file from the top
+   down to the last line needed, and each line gets a `+`, `-` or blank
+   gutter. If they don't (binary files, files over 1 MiB, text that wasn't
+   in memory yet), the header shows the size change instead, e.g.
+   `12.0 KiB → 14.1 KiB  +2.10 KiB`. Nothing that changes goes unshown.
+   Every change gets a header and a blank spacer after it.
 5. **Animate** (`feed::Feed`). The lines join a queue. On every frame,
    `tick` moves some of them onto the screen. The rate is `speed` plus half
    of the queue length per second, so a small change glides in and a burst
@@ -76,6 +78,10 @@ it is for. Start there.
   Starting in the middle of a file gets multi-line strings and comments
   wrong. We stop at the last line we need, so the cost is only high when a
   change is near the end of a big file.
+- **Every non-ignored file is shown when it changes, even if it can't be
+  diffed.** Hiding binary or large files would make the display lie about
+  what's happening. Ignore rules (`.gitignore`, hidden files, `.git`) are
+  the only thing that keeps a file off the screen.
 - **Removed lines are not syntax-highlighted.** They're shown dimmed in the
   "removed" color. This is easier to read at a glance and means only one
   version of the file ever needs highlighting.

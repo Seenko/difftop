@@ -29,13 +29,15 @@ released at a steady pace, so they scroll in instead of appearing all at once.
 
 difftop runs on Linux, on x86_64 and arm64.
 
-Prebuilt static binaries are attached to every
-[GitHub release](https://github.com/Seenko/difftop/releases). They work on
-any distro. For example:
+Every [GitHub release](https://github.com/Seenko/difftop/releases) has a
+ready-to-run binary, `difftop-linux-x86_64` or `difftop-linux-aarch64`.
+They're statically linked, so they work on any distro. Download one, make
+it executable, and put it on your `PATH`:
 
 ```bash
-curl -L https://github.com/Seenko/difftop/releases/latest/download/difftop-x86_64-unknown-linux-musl.tar.gz | tar xz
-sudo mv difftop-x86_64-unknown-linux-musl/difftop /usr/local/bin/
+curl -Lo difftop https://github.com/Seenko/difftop/releases/latest/download/difftop-linux-x86_64
+chmod +x difftop
+sudo mv difftop /usr/local/bin/
 ```
 
 To build from source instead, you need a Rust toolchain:
@@ -66,7 +68,8 @@ What gets watched:
 - `.gitignore` rules are respected. `--no-ignore` turns that off.
 - Hidden files and folders are skipped. `--hidden` includes them.
 - `.git` is always skipped.
-- Binary files and files over 1 MiB are skipped.
+- Binary files and files over 1 MiB can't be diffed, so they show their size
+  change instead, e.g. `12.0 KiB → 14.1 KiB  +2.10 KiB`.
 
 ## Themes
 
@@ -101,10 +104,10 @@ If you use [tinted-shell] or base16-shell to theme your terminal, the
 - difftop needs one inotify watch per folder. If you watch a huge tree, you
   may hit `fs.inotify.max_user_watches`. difftop shows a warning in the status
   line when that happens.
-- It keeps a copy of every tracked text file in memory, capped at 256 MiB
-  at startup, so that the first edit to a file can already be shown as a
-  diff. A file past that cap shows "changed, diffing from now on" on its
-  first change, and after that it's diffed normally.
+- It keeps a copy of every text file in memory, up to 256 MiB at startup,
+  so that the first edit to a file can already be shown as a diff. A text
+  file past that cap shows only its size change the first time it changes,
+  and is diffed normally after that.
 
 ## Contributing
 

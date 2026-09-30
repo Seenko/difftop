@@ -16,4 +16,5 @@ uses [Semantic Versioning](https://semver.org/).
 - Themes: `ansi` (the default, follows the terminal's palette live), the
   themes bundled from bat, any `.tmTheme` file, and any base16/base24 scheme.
 - Keys: pause, change speed, clear, quit.
+- Binary files and files over 1 MiB show their size change instead of a diff.
 - Static Linux binaries (x86_64, arm64) attached to each GitHub release.

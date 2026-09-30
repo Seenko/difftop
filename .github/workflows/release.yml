@@ -18,8 +18,8 @@ jobs:
       matrix:
         include:
           # musl makes the Linux binaries static, so they run on any distro.
-          - { target: x86_64-unknown-linux-musl, os: ubuntu-latest }
-          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-latest, asset: difftop-linux-x86_64 }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm, asset: difftop-linux-aarch64 }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -28,17 +28,15 @@ jobs:
           targets: ${{ matrix.target }}
       - run: sudo apt-get update && sudo apt-get install -y musl-tools
       - run: cargo build --release --locked --target ${{ matrix.target }}
+      # The release asset is the bare binary, so downloading it is all there is to it.
       - name: Package
         run: |
-          name=difftop-${{ matrix.target }}
-          mkdir "$name"
-          cp target/${{ matrix.target }}/release/difftop README.md LICENSE-MIT LICENSE-APACHE "$name"/
-          tar -czf "$name.tar.gz" "$name"
-          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+          cp target/${{ matrix.target }}/release/difftop ${{ matrix.asset }}
+          sha256sum ${{ matrix.asset }} > ${{ matrix.asset }}.sha256
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.target }}
-          path: difftop-*.tar.gz*
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}*
 
   publish:
     if: startsWith(github.ref, 'refs/tags/')

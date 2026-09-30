@@ -7,23 +7,22 @@
 //! are never watched at all, which keeps us far away from the kernel's watch
 //! limit on big trees.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs;
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::fs::{self, Metadata};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::Result;
-use notify::event::ModifyKind;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
 use crate::filter::Filter;
 
-/// Files bigger than this are never diffed.
+/// Files bigger than this are tracked by size instead of diffed.
 const MAX_FILE_SIZE: u64 = 1024 * 1024;
 /// How much file content the startup scan may keep in memory.
-// ponytail: files beyond the budget are learned on their first change
-// (shown as FirstSeen); add eviction if memory ever matters more than that.
+// ponytail: text files beyond the budget show a size change on their first
+// edit and are diffed after that; add eviction if memory ever matters more.
 const STARTUP_BUDGET: usize = 256 * 1024 * 1024;
 /// Events are collected until the folder has been quiet this long...
 const QUIET: Duration = Duration::from_millis(50);
@@ -52,10 +51,10 @@ pub enum Event {
 pub struct Change {
     pub path: PathBuf,
     pub kind: ChangeKind,
-    /// Content before the change; empty for `Created` and `FirstSeen`.
-    pub before: String,
-    /// Content after the change; empty for `Deleted`.
-    pub after: String,
+    /// The file before the change; empty for `Created`.
+    pub before: Snapshot,
+    /// The file after the change; empty for `Deleted`.
+    pub after: Snapshot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,8 +62,36 @@ pub enum ChangeKind {
     Created,
     Modified,
     Deleted,
-    /// Changed, but we had no earlier copy to diff against.
-    FirstSeen,
+}
+
+/// What we know about a file at one moment.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Snapshot {
+    pub size: u64,
+    /// The content, for files that can be diffed: valid UTF-8, no NUL bytes,
+    /// at most [`MAX_FILE_SIZE`]. Other files are tracked by size and time.
+    pub text: Option<String>,
+    pub modified: Option<SystemTime>,
+}
+
+impl Snapshot {
+    /// Reads the file's metadata, and its content too if `read` is set.
+    fn take(path: &Path, meta: &Metadata, read: bool) -> Self {
+        Self {
+            size: meta.len(),
+            text: read.then(|| read_text(path, meta.len())).flatten(),
+            modified: meta.modified().ok(),
+        }
+    }
+
+    /// Text is compared by content, so saving a file unchanged is no change.
+    /// Anything else falls back to size and modification time.
+    fn same_as(&self, other: &Self) -> bool {
+        match (&self.text, &other.text) {
+            (Some(a), Some(b)) => a == b,
+            _ => self.size == other.size && self.modified == other.modified,
+        }
+    }
 }
 
 /// Runs forever on the calling thread, calling `emit` for everything that
@@ -87,8 +114,8 @@ pub fn run(options: Options, mut emit: impl FnMut(Event)) -> Result<()> {
     });
 
     while let Some(batch) = next_batch(&rx) {
-        for (path, created) in batch {
-            state.update(path, created, &mut emit);
+        for path in batch {
+            state.update(path, &mut emit);
         }
     }
     Ok(())
@@ -98,8 +125,8 @@ struct State {
     filter: Filter,
     watcher: RecommendedWatcher,
     watched: HashSet<PathBuf>,
-    /// Last known content of every tracked file.
-    cache: HashMap<PathBuf, String>,
+    /// What we last saw of every file.
+    cache: HashMap<PathBuf, Snapshot>,
     cached_bytes: usize,
     warned: bool,
 }
@@ -130,12 +157,12 @@ impl State {
                     stack.push(path);
                 } else if kind.is_file() && !self.filter.is_ignored(&path, false) {
                     if report {
-                        self.update(path, true, emit);
-                    } else if self.cached_bytes < STARTUP_BUDGET
-                        && let Some(text) = read_text(&path)
-                    {
-                        self.cached_bytes += text.len();
-                        self.cache.insert(path, text);
+                        self.update(path, emit);
+                    } else if let Ok(meta) = entry.metadata() {
+                        let read = self.cached_bytes < STARTUP_BUDGET;
+                        let snapshot = Snapshot::take(&path, &meta, read);
+                        self.cached_bytes += snapshot.text.as_ref().map_or(0, String::len);
+                        self.cache.insert(path, snapshot);
                     }
                 }
             }
@@ -143,7 +170,7 @@ impl State {
     }
 
     /// Looks at `path` again and reports how it differs from what we knew.
-    fn update(&mut self, path: PathBuf, created: bool, emit: &mut impl FnMut(Event)) {
+    fn update(&mut self, path: PathBuf, emit: &mut impl FnMut(Event)) {
         if path.file_name().is_some_and(|n| n == ".gitignore")
             && let Some(dir) = path.parent()
         {
@@ -153,7 +180,12 @@ impl State {
         let Ok(meta) = fs::symlink_metadata(&path) else {
             self.watched.remove(&path);
             if let Some(before) = self.cache.remove(&path) {
-                emit(change(path, ChangeKind::Deleted, before, String::new()));
+                emit(change(
+                    path,
+                    ChangeKind::Deleted,
+                    before,
+                    Snapshot::default(),
+                ));
             }
             return;
         };
@@ -166,14 +198,16 @@ impl State {
         if !meta.is_file() || self.filter.is_ignored(&path, false) {
             return;
         }
-        let Some(after) = read_text(&path) else {
-            return;
-        };
+        let after = Snapshot::take(&path, &meta, true);
         match self.cache.insert(path.clone(), after.clone()) {
-            Some(before) if before == after => {}
+            Some(before) if before.same_as(&after) => {}
             Some(before) => emit(change(path, ChangeKind::Modified, before, after)),
-            None if created => emit(change(path, ChangeKind::Created, String::new(), after)),
-            None => emit(change(path, ChangeKind::FirstSeen, String::new(), after)),
+            None => emit(change(
+                path,
+                ChangeKind::Created,
+                Snapshot::default(),
+                after,
+            )),
         }
     }
 
@@ -193,7 +227,7 @@ impl State {
     }
 }
 
-fn change(path: PathBuf, kind: ChangeKind, before: String, after: String) -> Event {
+fn change(path: PathBuf, kind: ChangeKind, before: Snapshot, after: Snapshot) -> Event {
     Event::Change(Change {
         path,
         kind,
@@ -203,8 +237,8 @@ fn change(path: PathBuf, kind: ChangeKind, before: String, after: String) -> Eve
 }
 
 /// The file's content if it is small, valid UTF-8 and not binary.
-fn read_text(path: &Path) -> Option<String> {
-    if fs::metadata(path).ok()?.len() > MAX_FILE_SIZE {
+fn read_text(path: &Path, size: u64) -> Option<String> {
+    if size > MAX_FILE_SIZE {
         return None;
     }
     let bytes = fs::read(path).ok()?;
@@ -214,23 +248,15 @@ fn read_text(path: &Path) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
-/// Waits for the next burst of events and returns the paths it touched, each
-/// flagged with whether it was created (or renamed into place) during the burst.
+/// Waits for the next burst of events and returns the paths it touched.
 /// Returns `None` once the watcher is gone.
-fn next_batch(rx: &Receiver<notify::Result<notify::Event>>) -> Option<BTreeMap<PathBuf, bool>> {
-    let mut batch = BTreeMap::new();
+fn next_batch(rx: &Receiver<notify::Result<notify::Event>>) -> Option<BTreeSet<PathBuf>> {
+    let mut batch = BTreeSet::new();
     let mut add = |event: notify::Result<notify::Event>| {
         let Ok(event) = event else { return };
         // Access events fire when *we* read a file; following them would loop.
-        if matches!(event.kind, EventKind::Access(_)) {
-            return;
-        }
-        let created = matches!(
-            event.kind,
-            EventKind::Create(_) | EventKind::Modify(ModifyKind::Name(_))
-        );
-        for path in event.paths {
-            *batch.entry(path).or_insert(false) |= created;
+        if !matches!(event.kind, EventKind::Access(_)) {
+            batch.extend(event.paths);
         }
     };
 
@@ -288,14 +314,21 @@ mod tests {
         fs::write(root.join("a.txt"), "one\ntwo\n").unwrap();
         let edit = next_change(&rx);
         assert_eq!(edit.kind, ChangeKind::Modified);
-        assert_eq!(
-            (edit.before.as_str(), edit.after.as_str()),
-            ("one\n", "one\ntwo\n")
-        );
+        assert_eq!(edit.before.text.as_deref(), Some("one\n"));
+        assert_eq!(edit.after.text.as_deref(), Some("one\ntwo\n"));
 
-        // Ignored and binary files stay silent; the next event is the new file.
+        // Ignored files stay silent; binary ones are reported by size.
         fs::write(root.join("noise.log"), "x\n").unwrap();
         fs::write(root.join("image.bin"), [0u8, 1, 2]).unwrap();
+        let binary = next_change(&rx);
+        assert_eq!(binary.path, root.join("image.bin"));
+        assert_eq!((binary.kind, binary.after.size), (ChangeKind::Created, 3));
+        assert_eq!(binary.after.text, None);
+
+        fs::write(root.join("image.bin"), [0u8, 1, 2, 3, 4]).unwrap();
+        let grown = next_change(&rx);
+        assert_eq!((grown.before.size, grown.after.size), (3, 5));
+
         fs::create_dir(root.join("src")).unwrap();
         fs::write(root.join("src/new.rs"), "fn main() {}\n").unwrap();
         let created = next_change(&rx);
@@ -305,6 +338,6 @@ mod tests {
         fs::remove_file(root.join("a.txt")).unwrap();
         let deleted = next_change(&rx);
         assert_eq!(deleted.kind, ChangeKind::Deleted);
-        assert_eq!(deleted.before, "one\ntwo\n");
+        assert_eq!(deleted.before.text.as_deref(), Some("one\ntwo\n"));
     }
 }
