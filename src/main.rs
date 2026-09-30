@@ -12,6 +12,7 @@ mod filter;
 mod highlight;
 mod reload;
 mod render;
+mod shell;
 mod theme;
 mod ui;
 mod watch;
@@ -60,6 +61,7 @@ fn main() -> Result<()> {
         colors,
         context: args.context,
     };
+    let shell_tx = tx.clone();
     let watcher = watch::spawn(options, move |event| {
         let msg = match event {
             watch::Event::Ready { files } => Msg::Ready { files },
@@ -70,7 +72,13 @@ fn main() -> Result<()> {
         let _ = tx.send(msg);
     });
 
-    let mut app = App::new(feed::Feed::new(args.speed.max(1.0)), colors, roots, watcher);
+    let mut app = App::new(
+        feed::Feed::new(args.speed.max(1.0)),
+        colors,
+        roots,
+        watcher,
+        shell_tx,
+    );
     if let Some(saved) = resumed {
         app.resume(saved);
     }

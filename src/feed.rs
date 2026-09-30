@@ -72,6 +72,22 @@ impl<T> Feed<T> {
                 self.offset += 1;
             }
         }
+        self.trim();
+    }
+
+    /// Puts lines on screen at once (after anything still queued), for text
+    /// the user asked for, like shell output, rather than ambient changes.
+    pub fn show_now(&mut self, lines: impl IntoIterator<Item = T>) {
+        let before = self.shown.len();
+        self.shown.extend(self.pending.drain(..));
+        self.shown.extend(lines);
+        if self.offset > 0 {
+            self.offset += self.shown.len() - before;
+        }
+        self.trim();
+    }
+
+    fn trim(&mut self) {
         while self.shown.len() > MAX_SHOWN {
             self.shown.pop_front();
         }
@@ -193,6 +209,15 @@ mod tests {
 
         feed.follow();
         assert_eq!(view(&feed, 3), [11, 12, 13]);
+    }
+
+    #[test]
+    fn show_now_skips_the_queue_but_keeps_order() {
+        let mut feed = Feed::new(10.0);
+        feed.push(0..3);
+        feed.show_now([7, 8]);
+        assert_eq!(feed.queued(), 0);
+        assert_eq!(view(&feed, 10), [0, 1, 2, 7, 8]);
     }
 
     #[test]

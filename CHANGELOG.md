@@ -16,8 +16,10 @@ uses [Semantic Versioning](https://semver.org/).
 - The main shortcuts (pause, speed, clear, quit) are listed at the bottom of
   the screen, wrapping in narrow panes.
 
-- Command line (`:` or `!`) with `cd <folder>` to watch another folder
-  live, `cd -` and `cd ~`, Tab completion, and paste. What's on screen stays.
+- A shell prompt (`:` or `!`): run any command, see its output in the
+  feed as it runs, stop it with `Ctrl-C`. When a command changes directory,
+  difftop follows and watches the new folder. History with `↑`/`↓`, Tab
+  completion, paste.
 
 - Hot reload: replacing the difftop binary makes every running difftop
   switch to the new version within seconds, keeping history, scroll
@@ -25,7 +27,7 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- `Esc` no longer quits (it closes the command line); `q` and `Ctrl-C` do.
+- `Esc` no longer quits (it closes the prompt); `q` and `Ctrl-C` do.
 
 ### Fixed
 

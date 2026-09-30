@@ -31,7 +31,8 @@ it is for. Start there.
 | Module         | Job                                                                 | Knows about terminals? |
 | -------------- | ------------------------------------------------------------------- | ---------------------- |
 | `main.rs`      | Parses flags, wires the two threads together.                       | yes                    |
-| `command.rs`   | The `:` command line: parsing, `cd` path resolving, Tab completion. | no                     |
+| `shell.rs`     | Runs prompt lines in bash, streams output, reports the final cwd.   | no                     |
+| `command.rs`   | Tab completion for the prompt.                                      | no                     |
 | `cli.rs`       | Every command-line flag. `--help` text comes from its doc comments. | no                     |
 | `watch.rs`     | Watcher thread: inotify, batching, file cache, emits `Change`s.     | no                     |
 | `filter.rs`    | Which paths are ignored (`.gitignore`, hidden, `.git`).             | no                     |
@@ -82,14 +83,25 @@ dims nothing while scrolled, and it shows a toast with the number of
 newer lines. The toast's position is remembered so a click on it can
 resume following.
 
+**The shell prompt.** `shell::run` starts the typed line in `bash -c`,
+wrapped so that afterwards the shell writes its working directory to a
+private file (`pwd -P > $DIFFTOP_PWD_FILE`). That's how `cd` is followed
+wherever it appears in the line. stdout and stderr share one pipe, so
+errors land in order. A thread reads the pipe and sends each line to the
+frame loop as `Msg::Shell`. `Feed::show_now` puts them on screen right away
+instead of queueing them behind the animation. The command gets its own
+process group, so `Ctrl-C` (`Running::interrupt`) reaches everything it
+started. When the command ends with a different working directory, `ui`
+calls `App::cd`, which is the switch described next.
+
 **Switching folders.** `watch::spawn` returns a `Handle`. `Handle::watch`
 sends new roots over the same channel the file events use, so the watcher
 thread only ever waits in one place. On a switch, the thread drops its
 whole `State`, which removes every old watch, and starts over with a fresh
 scan. Events from the old watches that are still queued fall outside the
-new roots, so the filter drops them. `cd` also changes the process's
-working directory, so relative paths, `cd -` and the file names on screen
-all follow it, like in a shell.
+new roots, so the filter drops them. `App::cd` also changes the process's
+working directory, so the next command, `cd -` (passed as `OLDPWD`) and
+the file names on screen all follow it, like in a shell.
 
 **Hot reload.** `reload::Upgrade` checks the running binary's file once a
 second. A new build shows up as a new inode, size or modification time.

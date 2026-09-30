@@ -4,7 +4,7 @@
 use std::io;
 use std::ops::ControlFlow;
 use std::path::PathBuf;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -19,10 +19,12 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 
-use crate::command::{self, Command};
+use crate::command;
 use crate::feed::Feed;
+use crate::highlight::clean;
 use crate::reload::{self, Saved, SavedLine, Upgrade};
 use crate::render::tilde;
+use crate::shell;
 use crate::theme::UiColors;
 use crate::watch;
 
@@ -41,6 +43,7 @@ pub enum Msg {
     Lines(Vec<Line<'static>>),
     Ready { files: usize },
     Warning(String),
+    Shell(shell::Output),
 }
 
 pub struct App {
@@ -67,6 +70,13 @@ pub struct App {
     roots: Vec<PathBuf>,
     /// Notices when the binary on disk is replaced.
     upgrade: Option<Upgrade>,
+    /// For shell output to reach the frame loop.
+    tx: Sender<Msg>,
+    /// The shell command started from the prompt, while it runs.
+    running: Option<shell::Running>,
+    /// Prompt lines run so far, oldest first, and where ↑/↓ are in them.
+    history: Vec<String>,
+    history_pos: Option<usize>,
 }
 
 /// Takes over the terminal. Mouse reporting makes the wheel scroll, and
@@ -99,6 +109,7 @@ pub fn run(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) -> R
                 Msg::Lines(lines) => app.feed.push(lines),
                 Msg::Ready { files } => app.files = Some(files),
                 Msg::Warning(text) => app.warning = Some(text),
+                Msg::Shell(out) => app.on_shell(out),
             }
         }
         let now = Instant::now();
@@ -139,6 +150,7 @@ impl App {
         colors: UiColors,
         roots: Vec<PathBuf>,
         watcher: watch::Handle,
+        tx: Sender<Msg>,
     ) -> Self {
         let label = roots
             .iter()
@@ -160,6 +172,10 @@ impl App {
             notice: None,
             roots,
             upgrade: Upgrade::for_this_binary(),
+            tx,
+            running: None,
+            history: Vec::new(),
+            history_pos: None,
         }
     }
 
@@ -196,7 +212,7 @@ impl App {
 
     /// A quiet line in the feed marking something that happened.
     fn marker(&mut self, text: &str) {
-        self.feed.push([
+        self.feed.show_now([
             Line::default(),
             Line::styled(format!("── {text} ──"), self.colors.muted),
             Line::default(),
@@ -209,8 +225,12 @@ impl App {
         }
         let page = self.height.max(1) as isize;
         match key.code {
+            // Like a terminal: Ctrl-C stops a running command first.
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                return ControlFlow::Break(());
+                match &self.running {
+                    Some(running) => running.interrupt(),
+                    None => return ControlFlow::Break(()),
+                }
             }
             // Esc deliberately doesn't quit: it closes the command line, and
             // pressing it once too often shouldn't end the session.
@@ -231,7 +251,8 @@ impl App {
         ControlFlow::Continue(())
     }
 
-    /// Keys while the `:` line is open: editing, Tab completion, Enter to run.
+    /// Keys while the `:` prompt is open: editing, history, Tab completion,
+    /// Enter to run.
     fn on_input_key(&mut self, key: KeyEvent) -> ControlFlow<()> {
         let Some(input) = &mut self.input else {
             return ControlFlow::Continue(());
@@ -249,9 +270,20 @@ impl App {
                     *input = completed;
                 }
             }
+            KeyCode::Up | KeyCode::Down => {
+                let len = self.history.len();
+                let pos = match (key.code, self.history_pos) {
+                    (KeyCode::Up, None) => len.checked_sub(1),
+                    (KeyCode::Up, Some(pos)) => Some(pos.saturating_sub(1)),
+                    (_, Some(pos)) if pos + 1 < len => Some(pos + 1),
+                    _ => None,
+                };
+                self.history_pos = pos;
+                *input = pos.map(|pos| self.history[pos].clone()).unwrap_or_default();
+            }
             KeyCode::Enter => {
                 let line = self.input.take().unwrap_or_default();
-                return self.run_command(&line);
+                self.run_command(line);
             }
             KeyCode::Char(ch) if !ctrl => input.push(ch),
             _ => {}
@@ -259,18 +291,59 @@ impl App {
         ControlFlow::Continue(())
     }
 
-    fn run_command(&mut self, line: &str) -> ControlFlow<()> {
-        let result = match command::parse(line) {
-            Ok(Command::Quit) => return ControlFlow::Break(()),
-            Ok(Command::Cd(arg)) => {
-                command::resolve(&arg, self.previous.as_deref()).and_then(|dir| self.cd(dir))
-            }
-            Err(err) => Err(err),
-        };
-        if let Err(err) = result {
-            self.notice = Some((err, Instant::now()));
+    /// Runs a prompt line in a shell; its output arrives as [`Msg::Shell`].
+    fn run_command(&mut self, line: String) {
+        self.history_pos = None;
+        if line.trim().is_empty() {
+            return;
         }
-        ControlFlow::Continue(())
+        if self.history.last() != Some(&line) {
+            self.history.push(line.clone());
+        }
+        if self.running.is_some() {
+            self.notice = Some((
+                "a command is still running (Ctrl-C stops it)".into(),
+                Instant::now(),
+            ));
+            return;
+        }
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let prompt = Line::from(vec![
+            Span::styled(self.prompt(), Style::new().fg(self.colors.accent)),
+            Span::styled(clean(&line), Style::new().add_modifier(Modifier::BOLD)),
+        ]);
+        self.feed.follow();
+        self.feed.show_now([Line::default(), prompt]);
+        let tx = self.tx.clone();
+        match shell::run(&line, &cwd, self.previous.as_deref(), move |out| {
+            let _ = tx.send(Msg::Shell(out));
+        }) {
+            Ok(running) => self.running = Some(running),
+            Err(err) => self.notice = Some((format!("can't run a shell: {err}"), Instant::now())),
+        }
+    }
+
+    /// Shows shell output as it comes, and follows the shell if it `cd`ed.
+    fn on_shell(&mut self, out: shell::Output) {
+        match out {
+            shell::Output::Line(text) => self.feed.show_now([Line::raw(clean(&text))]),
+            shell::Output::Done { code, cwd } => {
+                self.running = None;
+                let ending = match code {
+                    Some(0) => None,
+                    Some(code) => Some(format!("exit {code}")),
+                    None => Some("interrupted".to_string()),
+                };
+                if let Some(ending) = ending {
+                    self.feed
+                        .show_now([Line::styled(ending, Style::new().fg(self.colors.removed))]);
+                }
+                let moved = cwd.filter(|dir| std::env::current_dir().ok().as_ref() != Some(dir));
+                if let Some(Err(err)) = moved.map(|dir| self.cd(dir)) {
+                    self.notice = Some((err, Instant::now()));
+                }
+            }
+        }
     }
 
     /// Moves difftop into `dir` and watches it instead of what it watched.
@@ -316,7 +389,10 @@ impl App {
         );
         let keys = match &self.input {
             Some(input) => vec![Line::from(vec![
-                Span::styled(" :", Style::new().fg(c.accent).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    self.prompt(),
+                    Style::new().fg(c.accent).add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(input.clone()),
             ])],
             None => self.keys(area.width),
@@ -352,7 +428,8 @@ impl App {
         self.speed = Some(self.draw_info(frame, info_area));
         frame.render_widget(Paragraph::new(keys), keys_area);
         if let Some(input) = &self.input {
-            let x = keys_area.x + 2 + input.chars().count() as u16;
+            let typed = self.prompt().chars().count() + input.chars().count();
+            let x = keys_area.x + typed as u16;
             frame.set_cursor_position((x.min(keys_area.right().saturating_sub(1)), keys_area.y));
         }
     }
@@ -375,6 +452,12 @@ impl App {
         frame.render_widget(Clear, area);
         frame.render_widget(Paragraph::new(text).style(style), area);
         area
+    }
+
+    /// ` ~/proj ❯ `: where commands run, shortened to leave room for typing.
+    fn prompt(&self) -> String {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        format!(" {} ❯ ", tail(&tilde(&cwd), 30))
     }
 
     /// Multiplies the speed by `factor`, never going below one line a second.
@@ -417,6 +500,9 @@ impl App {
         if self.feed.paused {
             parts.push("paused".to_string());
         }
+        if self.running.is_some() {
+            parts.push("running…".to_string());
+        }
         match self.files {
             None => parts.push("scanning…".into()),
             Some(1) => parts.push("1 file".into()),
@@ -442,7 +528,7 @@ impl App {
         // and the wheel do what everyone expects, and the toast names End.
         let keys = [
             ("space", pause),
-            (":", "command"),
+            (":", "shell"),
             ("+/-", "speed"),
             ("c", "clear"),
             ("q", "quit"),

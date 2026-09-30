@@ -169,9 +169,9 @@ pub fn take() -> Option<Saved> {
     serde_json::from_slice(&bytes.ok()?).ok()
 }
 
-/// Writes the state to a new file only this user can read. `create_new`
-/// refuses to follow a planted symlink or reuse an existing file.
-fn write_state(saved: &Saved) -> io::Result<PathBuf> {
+/// A fresh, hard-to-guess file name in the user's private runtime folder
+/// (or the temp folder where there is none), e.g. `difftop-resume-123-456`.
+pub fn private_path(kind: &str) -> PathBuf {
     let dir = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
@@ -179,7 +179,13 @@ fn write_state(saved: &Saved) -> io::Result<PathBuf> {
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let path = dir.join(format!("difftop-{}-{nanos}.json", std::process::id()));
+    dir.join(format!("difftop-{kind}-{}-{nanos}", std::process::id()))
+}
+
+/// Writes the state to a new file only this user can read. `create_new`
+/// refuses to follow a planted symlink or reuse an existing file.
+fn write_state(saved: &Saved) -> io::Result<PathBuf> {
+    let path = private_path("resume");
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)

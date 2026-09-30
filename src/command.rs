@@ -1,94 +1,61 @@
-//! The `:` command line: parsing what was typed, resolving folders, and
-//! Tab completion. No terminal code here; `ui` runs the results.
+//! Tab completion for the `:` prompt. Running what's typed is `shell`'s job.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum Command {
-    /// Watch another folder. The argument as typed; empty means home.
-    Cd(String),
-    Quit,
-}
-
-pub fn parse(line: &str) -> Result<Command, String> {
-    let line = line.trim();
-    let (name, arg) = line
-        .split_once(char::is_whitespace)
-        .map_or((line, ""), |(name, arg)| (name, arg.trim()));
-    match name {
-        // Everything after `cd` is the folder, so names with spaces need no quotes.
-        "cd" => Ok(Command::Cd(arg.to_string())),
-        "q" | "quit" => Ok(Command::Quit),
-        _ => Err(format!("unknown command `{name}` (try `cd <folder>`)")),
-    }
-}
-
-/// Turns a `cd` argument into an absolute, canonical folder, like a shell
-/// would: empty or `~` is home, `-` is the previous folder, and relative
-/// paths start from the current directory.
-pub fn resolve(arg: &str, previous: Option<&Path>) -> Result<PathBuf, String> {
-    let target = match arg {
-        "-" => previous.ok_or("no previous folder")?.to_path_buf(),
-        _ => expand(arg),
-    };
-    let dir = target
-        .canonicalize()
-        .map_err(|_| format!("no such folder: {arg}"))?;
-    if !dir.is_dir() {
-        return Err(format!("not a folder: {arg}"));
-    }
-    Ok(dir)
-}
-
-/// Completes the folder name at the end of a command line, as far as it is
-/// unambiguous. Returns the new line, or `None` if nothing matches.
+/// Completes the file or folder name at the end of `line`, as far as it is
+/// unambiguous, and returns the new line. After `cd`, only folders count.
+/// Folders get a trailing `/`, so the next Tab goes inside.
 pub fn complete(line: &str) -> Option<String> {
-    let arg = line.strip_prefix("cd ")?.trim_start();
-    let (dir, prefix) = match arg.rfind('/') {
-        Some(slash) => arg.split_at(slash + 1),
-        None => ("", arg),
+    let (head, word) = match line.rfind(' ') {
+        Some(space) => line.split_at(space + 1),
+        None => ("", line),
+    };
+    let folders_only = head.trim() == "cd";
+    let (dir, prefix) = match word.rfind('/') {
+        Some(slash) => word.split_at(slash + 1),
+        None => ("", word),
     };
     let base = if dir.is_empty() {
         PathBuf::from(".")
     } else {
         expand(dir)
     };
-    let mut names: Vec<String> = fs::read_dir(base)
+    let mut matches: Vec<(String, bool)> = fs::read_dir(base)
         .ok()?
         .flatten()
-        .filter(|entry| entry.path().is_dir())
-        .filter_map(|entry| entry.file_name().into_string().ok())
-        // Hidden folders only when the user started typing a dot.
-        .filter(|name| {
-            name.starts_with(prefix) && (prefix.starts_with('.') || !name.starts_with('.'))
+        .filter_map(|entry| {
+            let is_dir = entry.path().is_dir();
+            let name = entry.file_name().into_string().ok()?;
+            // Hidden entries only when the user started typing a dot.
+            let visible = prefix.starts_with('.') || !name.starts_with('.');
+            (name.starts_with(prefix) && visible && (is_dir || !folders_only))
+                .then_some((name, is_dir))
         })
         .collect();
-    names.sort();
-    let completed = match names.as_slice() {
+    matches.sort();
+    let completed = match matches.as_slice() {
         [] => return None,
-        [only] => format!("{only}/"),
-        [first, rest @ ..] => rest
+        [(name, true)] => format!("{name}/"),
+        [(name, false)] => format!("{name} "),
+        [(first, _), rest @ ..] => rest
             .iter()
-            .fold(first.as_str(), |common, name| common_prefix(common, name))
+            .fold(first.as_str(), |common, (name, _)| {
+                common_prefix(common, name)
+            })
             .to_string(),
     };
-    Some(format!("cd {dir}{completed}"))
+    Some(format!("{head}{dir}{completed}"))
 }
 
-/// `~` and `~/...` point into the home folder; everything else is as typed.
-fn expand(arg: &str) -> PathBuf {
-    let home = || {
-        std::env::var_os("HOME")
+/// `~/...` points into the home folder; everything else is as typed.
+fn expand(path: &str) -> PathBuf {
+    match path.strip_prefix("~/") {
+        Some(rest) => std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_default()
-    };
-    match arg {
-        "" | "~" => home(),
-        _ => match arg.strip_prefix("~/") {
-            Some(rest) => home().join(rest),
-            None => PathBuf::from(arg),
-        },
+            .join(rest),
+        None => PathBuf::from(path),
     }
 }
 
@@ -107,58 +74,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_commands() {
-        assert_eq!(parse("cd  my folder "), Ok(Command::Cd("my folder".into())));
-        assert_eq!(parse("cd"), Ok(Command::Cd(String::new())));
-        assert_eq!(parse(" q"), Ok(Command::Quit));
-        assert!(
-            parse("rm -rf /")
-                .unwrap_err()
-                .contains("unknown command `rm`")
-        );
-    }
-
-    #[test]
-    fn resolves_like_a_shell() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
-        fs::write(root.join("file"), "").unwrap();
-        let home = PathBuf::from(std::env::var_os("HOME").unwrap())
-            .canonicalize()
-            .unwrap();
-
-        assert_eq!(resolve(root.to_str().unwrap(), None), Ok(root.clone()));
-        assert_eq!(resolve("", None), Ok(home.clone()));
-        assert_eq!(resolve("~", None), Ok(home));
-        assert_eq!(resolve("-", Some(&root)), Ok(root.clone()));
-        assert!(resolve("-", None).is_err());
-        assert!(
-            resolve(root.join("file").to_str().unwrap(), None)
-                .unwrap_err()
-                .starts_with("not a folder")
-        );
-        assert!(
-            resolve("/no/such/place", None)
-                .unwrap_err()
-                .starts_with("no such folder")
-        );
-    }
-
-    #[test]
-    fn completes_folder_names() {
+    fn completes_files_and_folders() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().to_str().unwrap().to_string();
         for dir in ["project-a", "project-b", "notes", ".hidden"] {
             fs::create_dir(tmp.path().join(dir)).unwrap();
         }
+        fs::write(tmp.path().join("readme.md"), "").unwrap();
         fs::write(tmp.path().join("notes.txt"), "").unwrap();
 
-        let complete_in = |typed: &str| complete(&format!("cd {root}/{typed}"));
-        let expect = |rest: &str| Some(format!("cd {root}/{rest}"));
-        assert_eq!(complete_in("no"), expect("notes/"));
-        assert_eq!(complete_in("pro"), expect("project-"));
-        assert_eq!(complete_in(".h"), expect(".hidden/"));
-        assert_eq!(complete_in("zzz"), None);
-        assert_eq!(complete("quit"), None);
+        let complete_in = |cmd: &str, typed: &str| complete(&format!("{cmd}{root}/{typed}"));
+        let expect = |cmd: &str, rest: &str| Some(format!("{cmd}{root}/{rest}"));
+        assert_eq!(
+            complete_in("cd ", "no"),
+            expect("cd ", "notes/"),
+            "cd skips files"
+        );
+        assert_eq!(
+            complete_in("cat ", "no"),
+            expect("cat ", "notes"),
+            "ambiguous"
+        );
+        assert_eq!(complete_in("cat ", "re"), expect("cat ", "readme.md "));
+        assert_eq!(complete_in("ls ", "pro"), expect("ls ", "project-"));
+        assert_eq!(complete_in("ls ", ".h"), expect("ls ", ".hidden/"));
+        assert_eq!(complete_in("ls ", "zzz"), None);
     }
 }

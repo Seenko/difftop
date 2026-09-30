@@ -64,7 +64,7 @@ difftop --help            # everything else
 | `+` / `-`              | faster / slower                        |
 | wheel over the speed   | faster / slower, in finer steps        |
 | `c`                    | clear the screen                       |
-| `:` or `!`             | open the command line                  |
+| `:` or `!`             | open the shell prompt                  |
 | `q` / `Ctrl-C`         | quit                                   |
 
 The ones you wouldn't guess are listed at the bottom of the screen.
@@ -74,20 +74,22 @@ put and new changes keep arriving below it. A notice at the bottom shows
 how many newer lines there are. Press `End` or click the notice to follow
 again.
 
-### Moving around
+### The built-in shell
 
-Press `:` (or `!`) to open the command line. It works like a shell prompt:
+Press `:` (or `!`) to get a shell prompt, `~/proj ❯`, without leaving
+difftop. Type any command (`ls`, `git status`, `cargo build`, ...) and its
+output appears in the feed as it runs.
 
-| Command         | Does                                                   |
-| --------------- | ------------------------------------------------------ |
-| `cd <folder>`   | watch another folder instead, without restarting       |
-| `cd` / `cd ~`   | watch your home folder                                 |
-| `cd -`          | go back to the previous folder                         |
-| `q`             | quit                                                   |
+If a command changes directory (`cd ../other`, `cd src && ls`, `cd -`),
+difftop follows. It watches the new folder from then on, and a line in the
+feed marks the switch. What's already on screen stays.
 
-`Tab` completes folder names, pasting works, `Enter` runs the command, and
-`Esc` closes the line. What's already on screen stays; a line marks where
-you switched folders.
+- `↑`/`↓` go through earlier commands, and `Tab` completes file and folder
+  names. Pasting works.
+- `Enter` runs the command, and `Esc` closes the prompt.
+- `Ctrl-C` stops a running command. If nothing is running, it quits difftop.
+- Commands run in `bash` (or `sh`) with no keyboard input, so interactive
+  programs like editors, pagers and password prompts don't work here.
 
 difftop uses the mouse for scrolling, so to select text with the mouse,
 hold `Shift` while dragging (most terminals).
