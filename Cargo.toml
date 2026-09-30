@@ -1,6 +1,6 @@
 [package]
 name = "difftop"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Watch a folder and see every file change rise up your terminal as live, syntax-highlighted diffs"
 license = "MIT OR Apache-2.0"
