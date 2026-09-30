@@ -6,6 +6,10 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `install.sh`: install the latest release with one `curl ... | sh`.
+
 ## [0.1.0] - 2026-09-29
 
 ### Added

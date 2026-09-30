@@ -20,4 +20,5 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
       - run: cargo clippy --all-targets
+      - run: shellcheck install.sh
       - run: cargo test

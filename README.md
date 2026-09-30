@@ -27,20 +27,20 @@ released at a steady pace, so they scroll in instead of appearing all at once.
 
 ## Install
 
-difftop runs on Linux, on x86_64 and arm64.
-
-Every [GitHub release](https://github.com/Seenko/difftop/releases) has a
-ready-to-run binary, `difftop-linux-x86_64` or `difftop-linux-aarch64`.
-They're statically linked, so they work on any distro. Download one, make
-it executable, and put it on your `PATH`:
+difftop runs on Linux (x86_64 and arm64).
 
 ```bash
-curl -Lo difftop https://github.com/Seenko/difftop/releases/latest/download/difftop-linux-x86_64
-chmod +x difftop
-sudo mv difftop /usr/local/bin/
+curl -fsSL https://raw.githubusercontent.com/Seenko/difftop/main/install.sh | sh
 ```
 
-To build from source instead, you need a Rust toolchain:
+[The script](install.sh) downloads the latest release binary, checks its
+checksum, and puts it in `~/.local/bin`. No sudo is needed. Set
+`DIFFTOP_DIR` to install somewhere else.
+
+You can also download the binary yourself. Every
+[release](https://github.com/Seenko/difftop/releases) has
+`difftop-linux-x86_64` and `difftop-linux-aarch64`, statically linked so
+they run on any distro. Or build from source with a Rust toolchain:
 
 ```bash
 cargo install --git https://github.com/Seenko/difftop
