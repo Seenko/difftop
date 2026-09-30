@@ -73,10 +73,18 @@ tmux kill-session -t dt
 
 ## Releasing
 
-1. Bump `version` in `Cargo.toml`, run `cargo build` so `Cargo.lock` follows.
-2. In `CHANGELOG.md`, rename `Unreleased` to the version and date, and start
+Ask the maintainer before cutting a release.
+
+1. Refresh the screenshots: `./scripts/screenshots.sh` (needs `tmux` and
+   [`freeze`](https://github.com/charmbracelet/freeze)). Look at every
+   picture in `docs/screenshots/`: does it show difftop as it is now? Then
+   read the README top to bottom and fix anything that no longer matches
+   (features, keys, wording). If the UI gained something worth showing, add
+   a scene to the script rather than a hand-made picture.
+2. Bump `version` in `Cargo.toml`, run `cargo build` so `Cargo.lock` follows.
+3. In `CHANGELOG.md`, rename `Unreleased` to the version and date, and start
    a fresh `Unreleased` section above it.
-3. Commit (`chore: release v0.2.0`), then tag and push:
+4. Commit (`chore: release v0.2.0`), then tag and push:
    `git tag v0.2.0 && git push origin main v0.2.0`.
 
 `.github/workflows/release.yml` builds static Linux binaries (x86_64 and

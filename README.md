@@ -8,18 +8,7 @@ a side pane of a tiling window manager and it shows what's happening in your
 projects. It doesn't care who made a change, whether that's you, your
 editor, a formatter or five coding agents at once.
 
-```text
-▍ src/feed.rs  +1 −0
-      pub fn clear(&mut self) {
-+         self.budget = 0.0;
-          self.shown.clear();
-      }
-
-▍ hello.py  new +3
-+ def hello(name):
-+     """Say hi."""
-+     return f"hi {name}"
-```
+![difftop showing a Rust edit, a new file and a binary file's size change](docs/screenshots/feed.png)
 
 New changes enter at the bottom and push older ones up. Brightness means
 one thing: added and removed lines are bright, and the unchanged lines
@@ -75,36 +64,8 @@ wouldn't guess (`:` and `c`), and the file count and speed.
 You can scroll back at any time. While you're scrolled back, the view stays
 put and new changes keep arriving below it. A notice at the bottom shows
 how many newer lines there are. Press `End` or click the notice to follow
-again.
-
-### The built-in shell
-
-Press `:` (or `!`) to get a shell prompt without leaving difftop. It's
-*your* prompt: difftop asks your shell (bash, zsh or fish) to draw it, so
-`PS1`, starship and the like look the way they do in your terminal. While
-it's open, your prompt sits in a box at the bottom, and every command you
-run shows up in a box of its own, with the file changes flowing around
-them. Type any
-command (`ls`, `git status`, `cargo build`, ...) and its output appears as
-it runs. Commands run in your own shell with your aliases, on a real
-(pseudo-)terminal the width of difftop, so colors and columns come out
-the same as in your terminal.
-
-If a command changes directory (`cd ../other`, `cd src && ls`, `cd -`),
-difftop follows. It watches the new folder from then on, and a line in the
-feed marks the switch. What's already on screen stays.
-
-- `↑`/`↓` go through earlier commands, and `Tab` completes file and folder
-  names. Pasting works.
-- `Enter` runs the command and leaves the prompt open for the next one.
-  `Esc` closes it.
-- `Ctrl-C` stops a running command. If nothing is running, it quits difftop.
-- Full-screen and interactive programs (editors, pagers, password prompts)
-  don't work here, because difftop doesn't pass your keys on to them. If one
-  waits for input, `Ctrl-C` stops it.
-
-difftop uses the mouse for scrolling, so to select text with the mouse,
-hold `Shift` while dragging (most terminals).
+again. difftop uses the mouse for scrolling, so to select text with the
+mouse, hold `Shift` while dragging (most terminals).
 
 What gets watched:
 
@@ -114,6 +75,32 @@ What gets watched:
 - `.git` is always skipped.
 - Binary files and files over 1 MiB can't be diffed, so they show their size
   change instead, e.g. `12.0 KiB → 14.1 KiB  +2.10 KiB`.
+
+### The built-in shell
+
+Press `:` (or `!`) to get a shell prompt without leaving difftop. It's
+*your* prompt: difftop asks your shell (bash or zsh) to draw it, so `PS1`,
+starship and the like look the way they do in your terminal. Type any
+command (`ls`, `git status`, `cargo build`, ...) and its output appears as
+it runs, in a box of its own, with file changes flowing around the boxes.
+Commands run in your own shell with your aliases, on a real
+(pseudo-)terminal the width of difftop, so colors and columns come out the
+same as in your terminal.
+
+If a command changes directory (`cd ../other`, `cd src && ls`, `cd -`),
+difftop follows. It watches the new folder from then on, and a line in the
+feed marks the switch. What's already on screen stays.
+
+![difftop's shell: commands in boxes, a file change between them, and cd moving the watch](docs/screenshots/shell.png)
+
+- `↑`/`↓` go through earlier commands, and `Tab` completes file and folder
+  names. Pasting works.
+- `Enter` runs the command and leaves the prompt open for the next one.
+  `Esc` closes it.
+- `Ctrl-C` stops a running command. If nothing is running, it quits difftop.
+- Full-screen and interactive programs (editors, pagers, password prompts)
+  don't work here, because difftop doesn't pass your keys on to them. If one
+  waits for input, `Ctrl-C` stops it.
 
 ## Themes
 

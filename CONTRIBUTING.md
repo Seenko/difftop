@@ -40,7 +40,8 @@ The doc comment at the top of each file in `src/` explains that file.
 4. Add a line under `Unreleased` in [CHANGELOG.md](CHANGELOG.md) if users
    would notice the change.
 5. Open a pull request. Explain what changed and why. Screenshots or
-   recordings help a lot for anything visual.
+   recordings help a lot for anything visual. (The README's pictures are
+   regenerated with `scripts/screenshots.sh` at each release.)
 
 Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/),
 e.g. `feat: add --no-fade flag` or `fix: keep watching after a folder is renamed`.

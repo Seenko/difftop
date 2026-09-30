@@ -205,4 +205,6 @@ grep -rn "ponytail:" src
 - `watch::tests` runs the real watcher on a temp folder, so inotify is
   covered end to end.
 - The TUI itself isn't unit-tested. To check it by eye, run it in tmux.
-  [AGENTS.md](AGENTS.md#seeing-the-tui) shows how.
+  [AGENTS.md](AGENTS.md#seeing-the-tui) shows how. `scripts/screenshots.sh`
+  plays a scripted demo that way to make the README pictures, which doubles
+  as a visual smoke test.
