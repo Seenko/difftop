@@ -27,7 +27,8 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- `Esc` no longer quits (it closes the prompt); `q` and `Ctrl-C` do.
+- Quitting with `Esc` takes two presses; the first shows "Press Esc again
+  to quit difftop". `q` still quits at once.
 
 ### Fixed
 

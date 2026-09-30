@@ -66,6 +66,7 @@ difftop --help            # everything else
 | `c`                    | clear the screen                       |
 | `:` or `!`             | open the shell prompt                  |
 | `q` / `Ctrl-C`         | quit                                   |
+| `Esc` `Esc`            | quit (the first press asks to confirm) |
 
 The ones you wouldn't guess are listed at the bottom of the screen.
 
@@ -86,7 +87,8 @@ feed marks the switch. What's already on screen stays.
 
 - `↑`/`↓` go through earlier commands, and `Tab` completes file and folder
   names. Pasting works.
-- `Enter` runs the command, and `Esc` closes the prompt.
+- `Enter` runs the command and leaves the prompt open for the next one.
+  `Esc` closes it.
 - `Ctrl-C` stops a running command. If nothing is running, it quits difftop.
 - Commands run in `bash` (or `sh`) with no keyboard input, so interactive
   programs like editors, pagers and password prompts don't work here.

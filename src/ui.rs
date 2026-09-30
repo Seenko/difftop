@@ -30,6 +30,8 @@ use crate::watch;
 
 /// About 30 frames per second: smooth enough, and cheap when idle.
 const FRAME: Duration = Duration::from_millis(33);
+/// How long the second Esc has to come to quit.
+const QUIT_CONFIRM: Duration = Duration::from_secs(3);
 /// How long an error from the command line stays in the footer.
 const NOTICE: Duration = Duration::from_secs(4);
 /// Lines moved per mouse-wheel notch.
@@ -77,6 +79,8 @@ pub struct App {
     /// Prompt lines run so far, oldest first, and where ↑/↓ are in them.
     history: Vec<String>,
     history_pos: Option<usize>,
+    /// When Esc was pressed once, asking for a second one to quit.
+    quit_armed: Option<Instant>,
 }
 
 /// Takes over the terminal. Mouse reporting makes the wheel scroll, and
@@ -176,6 +180,7 @@ impl App {
             running: None,
             history: Vec::new(),
             history_pos: None,
+            quit_armed: None,
         }
     }
 
@@ -224,6 +229,11 @@ impl App {
             return self.on_input_key(key);
         }
         let page = self.height.max(1) as isize;
+        // Any key answers the "Esc again to quit" warning; only Esc confirms it.
+        let quit_armed = self
+            .quit_armed
+            .take()
+            .is_some_and(|at| at.elapsed() < QUIT_CONFIRM);
         match key.code {
             // Like a terminal: Ctrl-C stops a running command first.
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -232,8 +242,10 @@ impl App {
                     None => return ControlFlow::Break(()),
                 }
             }
-            // Esc deliberately doesn't quit: it closes the command line, and
-            // pressing it once too often shouldn't end the session.
+            // Esc quits only when pressed twice, with a warning in between,
+            // so one Esc too many after closing the prompt is harmless.
+            KeyCode::Esc if quit_armed => return ControlFlow::Break(()),
+            KeyCode::Esc => self.quit_armed = Some(Instant::now()),
             KeyCode::Char('q') => return ControlFlow::Break(()),
             KeyCode::Char(':') | KeyCode::Char('!') => self.input = Some(String::new()),
             KeyCode::Char(' ') => self.feed.paused = !self.feed.paused,
@@ -281,8 +293,9 @@ impl App {
                 self.history_pos = pos;
                 *input = pos.map(|pos| self.history[pos].clone()).unwrap_or_default();
             }
+            // The prompt stays open for the next command, like a terminal.
             KeyCode::Enter => {
-                let line = self.input.take().unwrap_or_default();
+                let line = std::mem::take(input);
                 self.run_command(line);
             }
             KeyCode::Char(ch) if !ctrl => input.push(ch),
@@ -477,7 +490,16 @@ impl App {
         // paths, which is the part that tells folders apart.
         let room = (label_area.width as usize).saturating_sub(2);
         let notice = self.notice.as_ref().filter(|(_, at)| at.elapsed() < NOTICE);
+        let quitting = self
+            .quit_armed
+            .is_some_and(|at| at.elapsed() < QUIT_CONFIRM);
         let label = match notice.map(|(text, _)| text).or(self.warning.as_ref()) {
+            _ if quitting => Line::from(Span::styled(
+                " Press Esc again to quit difftop ",
+                Style::new()
+                    .fg(c.removed)
+                    .add_modifier(Modifier::REVERSED | Modifier::BOLD),
+            )),
             Some(warning) => Line::styled(format!(" {warning}"), Style::new().fg(c.removed)),
             None => Line::styled(
                 format!(" {}", tail(&self.label, room)),
