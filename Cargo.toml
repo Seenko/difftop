@@ -1,0 +1,32 @@
+[package]
+name = "difftop"
+version = "0.1.0"
+edition = "2024"
+description = "Watch a folder and see every file change rise up your terminal as live, syntax-highlighted diffs"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Seenko/difftop"
+readme = "README.md"
+keywords = ["tui", "diff", "watch", "terminal", "screensaver"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+ignore = "0.4.33"
+notify = "8.2.0"
+ratatui = "0.30.2"
+similar = "3.2.0"
+# Only what we use: parsing, .tmTheme loading, and the Oniguruma regex engine
+# that bat's syntax definitions (from two-face) are written for.
+syntect = { version = "5.3.0", default-features = false, features = ["parsing", "plist-load", "regex-onig"] }
+two-face = "0.5.2"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[profile.release]
+lto = true
+strip = true

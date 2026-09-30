@@ -1,0 +1,35 @@
+name: Bug report
+description: Something doesn't work or looks wrong
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to reproduce
+      placeholder: |
+        1. difftop --theme ... ~/folder
+        2. edit a file with ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: difftop version
+      placeholder: output of `difftop --version`
+    validations:
+      required: true
+  - type: input
+    id: terminal
+    attributes:
+      label: Terminal, and theme if relevant
+      placeholder: e.g. kitty 0.40, --theme dracula
+  - type: textarea
+    id: extra
+    attributes:
+      label: Screenshots or anything else
