@@ -79,9 +79,12 @@ again.
 
 Press `:` (or `!`) to get a shell prompt without leaving difftop. It's
 *your* prompt: difftop asks your shell (bash, zsh or fish) to draw it, so
-`PS1`, starship and the like look the way they do in your terminal. Type any
-command (`ls`, `git status`, `cargo build`, ...) and its output appears in
-the feed as it runs.
+`PS1`, starship and the like look the way they do in your terminal. While
+it's open, a frame around the screen shows you're in the shell. Type any
+command (`ls`, `git status`, `cargo build`, ...) and its output appears as
+it runs. Commands run in your own shell with your aliases, on a real
+(pseudo-)terminal the width of difftop, so colors and columns come out
+the same as in your terminal.
 
 If a command changes directory (`cd ../other`, `cd src && ls`, `cd -`),
 difftop follows. It watches the new folder from then on, and a line in the
@@ -92,8 +95,9 @@ feed marks the switch. What's already on screen stays.
 - `Enter` runs the command and leaves the prompt open for the next one.
   `Esc` closes it.
 - `Ctrl-C` stops a running command. If nothing is running, it quits difftop.
-- Commands run in `bash` (or `sh`) with no keyboard input, so interactive
-  programs like editors, pagers and password prompts don't work here.
+- Full-screen and interactive programs (editors, pagers, password prompts)
+  don't work here, because difftop doesn't pass your keys on to them. If one
+  waits for input, `Ctrl-C` stops it.
 
 difftop uses the mouse for scrolling, so to select text with the mouse,
 hold `Shift` while dragging (most terminals).

@@ -1,22 +1,32 @@
-//! Runs a line typed at the `:` prompt in a real shell, streaming its output
-//! back, and reports which folder the shell ended up in so difftop can
-//! follow a `cd`.
+//! Runs a line typed at the `:` prompt the way the user's terminal would,
+//! streaming its output back, and reports which folder the shell ended up in
+//! so difftop can follow a `cd`.
+//!
+//! The command runs in the user's own shell, interactive, so their aliases
+//! and settings apply, inside a pseudo-terminal (PTY) the size of difftop's
+//! screen. To the programs it looks like a real terminal, so they print
+//! colors and columns just as they would outside difftop, and Ctrl-C is a
+//! real Ctrl-C.
 //!
 //! The line is wrapped in a small script that, after the command, writes the
 //! shell's working directory to a file we name. That's what makes `cd` work
 //! anywhere in the line (`cd src && ls`), not just as a lone command.
 
-use std::io::{self, BufRead, BufReader};
-use std::os::unix::process::CommandExt;
+use std::fs::File;
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::thread;
+
+use rustix::fs::{Mode, OFlags};
+use rustix::pty::{self, OpenptFlags};
+use rustix::termios::{self, Winsize};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Output {
-    /// One line of what the command printed (stdout and stderr, in order).
+    /// One line of what the command printed, color codes included.
     Line(String),
-    /// The command finished. `code` is `None` if it was killed by a signal;
+    /// The command finished. `code` is `None` if the shell itself was killed;
     /// `cwd` is where the shell ended up, if it got that far.
     Done {
         code: Option<i32>,
@@ -26,56 +36,73 @@ pub enum Output {
 
 /// A command that's still running.
 pub struct Running {
-    pgid: u32,
+    /// Our end of its terminal.
+    pty: File,
 }
 
 impl Running {
-    /// Sends Ctrl-C (SIGINT) to the command and everything it started.
+    /// Types Ctrl-C into the command's terminal, which interrupts it exactly
+    /// like in a real terminal.
     pub fn interrupt(&self) {
-        // std can't signal a process group without unsafe code, so ask `kill`.
-        let _ = Command::new("kill")
-            .args(["-INT", "--", &format!("-{}", self.pgid)])
-            .stderr(Stdio::null())
-            .status();
+        let _ = (&self.pty).write_all(b"\x03");
     }
 }
 
-/// Starts `line` in `cwd` and returns right away; `on_output` is called from
-/// a background thread for every line and once at the end. `oldpwd` is
-/// where `cd -` goes.
+/// Starts `line` in `cwd` on a terminal of `size` (columns, rows) and returns
+/// right away; `on_output` is called from a background thread for every line
+/// and once at the end. `oldpwd` is where `cd -` goes.
 pub fn run(
     line: &str,
     cwd: &Path,
     oldpwd: Option<&Path>,
+    (cols, rows): (u16, u16),
     mut on_output: impl FnMut(Output) + Send + 'static,
 ) -> io::Result<Running> {
+    // A fresh pseudo-terminal: we keep the "master" end, the command gets the other.
+    let pty = pty::openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC)?;
+    pty::grantpt(&pty)?;
+    pty::unlockpt(&pty)?;
+    let size = Winsize {
+        ws_col: cols,
+        ws_row: rows,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    termios::tcsetwinsize(&pty, size)?;
+    let name = pty::ptsname(&pty, Vec::new())?;
+    let flags = OFlags::RDWR | OFlags::NOCTTY | OFlags::CLOEXEC;
+    let terminal = File::from(rustix::fs::open(name.as_c_str(), flags, Mode::empty())?);
+
     let pwd_file = crate::reload::private_path("pwd");
     let script = format!(
-        "{line}\n__difftop_status=$?\npwd -P > \"$DIFFTOP_PWD_FILE\"\nexit $__difftop_status\n"
+        "{line}\n__difftop_status=$?\npwd -P > \"$DIFFTOP_PWD_FILE\"\n(exit $__difftop_status)\n"
     );
-    let (reader, writer) = io::pipe()?;
-    let mut command = Command::new(shell());
+    // `setsid --ctty` gives the shell its own session with this terminal as
+    // its controlling terminal, which interactive shells need for job
+    // control (and Ctrl-C) to work.
+    let mut command = Command::new("setsid");
     command
-        .arg("-c")
-        .arg(script)
+        .args(["--ctty", shell(), "-ic", &script])
         .current_dir(cwd)
         .env("DIFFTOP_PWD_FILE", &pwd_file)
-        .stdin(Stdio::null())
-        .stdout(writer.try_clone()?)
-        .stderr(writer)
-        // Its own process group, so Ctrl-C reaches everything it starts.
-        .process_group(0);
+        .stdin(terminal.try_clone()?)
+        .stdout(terminal.try_clone()?)
+        .stderr(terminal);
     if let Some(oldpwd) = oldpwd {
         command.env("OLDPWD", oldpwd);
     }
     let mut child = command.spawn()?;
-    // Drop our copies of the pipe's write end, or reading would never end.
+    // Drop our copies of the command's end, or reading would never end.
     drop(command);
-    let running = Running { pgid: child.id() };
+    let pty = File::from(pty);
+    let running = Running {
+        pty: pty.try_clone()?,
+    };
 
     thread::spawn(move || {
-        let mut reader = BufReader::new(reader);
+        let mut reader = BufReader::new(pty);
         let mut buf = Vec::new();
+        // Reading fails (EIO) once the command's side is closed: that's the end.
         while reader.read_until(b'\n', &mut buf).is_ok_and(|n| n > 0) {
             let text = String::from_utf8_lossy(&buf);
             on_output(Output::Line(
@@ -93,11 +120,17 @@ pub fn run(
     Ok(running)
 }
 
-/// bash where there is one (nearly everywhere), plain sh otherwise.
+/// The user's shell if the wrapper script speaks its language, else bash.
 fn shell() -> &'static str {
-    let has_bash = std::env::var_os("PATH")
-        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("bash").is_file()));
-    if has_bash { "bash" } else { "sh" }
+    match std::env::var("SHELL")
+        .ok()
+        .as_deref()
+        .map(Path::new)
+        .and_then(Path::file_name)
+    {
+        Some(name) if name == "zsh" => "zsh",
+        _ => "bash",
+    }
 }
 
 #[cfg(test)]
@@ -108,7 +141,7 @@ mod tests {
 
     fn start(line: &str, cwd: &Path) -> (Running, Receiver<Output>) {
         let (tx, rx) = mpsc::channel();
-        let running = run(line, cwd, None, move |out| {
+        let running = run(line, cwd, None, (80, 24), move |out| {
             let _ = tx.send(out);
         })
         .unwrap();
@@ -161,12 +194,13 @@ mod tests {
         ));
 
         let (_, rx) = start("exit 3", tmp.path());
+        let all = collect(&rx);
         assert_eq!(
-            collect(&rx),
-            [Output::Done {
+            all.last(),
+            Some(&Output::Done {
                 code: Some(3),
                 cwd: None
-            }]
+            })
         );
     }
 
@@ -174,9 +208,27 @@ mod tests {
     fn interrupt_stops_a_long_command() {
         let tmp = tempfile::tempdir().unwrap();
         let (running, rx) = start("sleep 30", tmp.path());
-        thread::sleep(Duration::from_millis(200));
+        thread::sleep(Duration::from_millis(500));
         running.interrupt();
         let all = collect(&rx);
-        assert!(matches!(all.last(), Some(Output::Done { cwd: None, .. })));
+        assert!(
+            matches!(
+                all.last(),
+                Some(Output::Done {
+                    code: Some(130),
+                    ..
+                })
+            ),
+            "{all:?}"
+        );
+    }
+
+    #[test]
+    fn programs_see_a_terminal_of_the_right_size() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_, rx) = start("test -t 1 && echo tty; stty size", tmp.path());
+        let all = collect(&rx);
+        assert!(all.contains(&Output::Line("tty".into())), "{all:?}");
+        assert!(all.contains(&Output::Line("24 80".into())), "{all:?}");
     }
 }

@@ -14,9 +14,9 @@ use ratatui::crossterm::event::{
 };
 use ratatui::crossterm::execute;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 
 use crate::command;
@@ -60,6 +60,8 @@ pub struct App {
     pub warning: Option<String>,
     /// Height of the feed area at the last draw, for paging.
     height: usize,
+    /// Width of the feed area at the last draw, for shell commands' terminal.
+    width: u16,
     /// Where the "follow" toast was drawn, so a click on it can be recognised.
     toast: Option<Rect>,
     /// Where the speed was drawn, so the wheel over it changes the speed.
@@ -174,6 +176,7 @@ impl App {
             files: None,
             warning: None,
             height: 0,
+            width: 80,
             toast: None,
             speed: None,
             watcher,
@@ -335,7 +338,8 @@ impl App {
         self.feed.show_now([Line::default()]);
         self.feed.show_now(self.prompt_with(&line));
         let tx = self.tx.clone();
-        match shell::run(&line, &cwd, self.previous.as_deref(), move |out| {
+        let size = (self.width, self.height as u16);
+        match shell::run(&line, &cwd, self.previous.as_deref(), size, move |out| {
             let _ = tx.send(Msg::Shell(out));
         }) {
             Ok(running) => self.running = Some(running),
@@ -351,8 +355,8 @@ impl App {
                 self.running = None;
                 let ending = match code {
                     Some(0) => None,
+                    Some(130) | None => Some("interrupted".to_string()),
                     Some(code) => Some(format!("exit {code}")),
-                    None => Some("interrupted".to_string()),
                 };
                 if let Some(ending) = ending {
                     self.feed
@@ -404,26 +408,41 @@ impl App {
 
     fn draw(&mut self, frame: &mut Frame) {
         let c = self.colors;
-        let area = frame.area();
+        let mut area = frame.area();
         frame.render_widget(
             Block::new().style(Style::new().fg(c.foreground).bg(c.background)),
             area,
         );
-        let keys = match &self.input {
+        // In the shell, a frame around everything says "you're in a
+        // terminal now", and the status line makes way for the prompt.
+        let in_shell = self.input.is_some();
+        if in_shell {
+            let frame_block = Block::bordered()
+                .border_type(BorderType::Rounded)
+                .border_style(c.muted)
+                .title(Line::from(" shell ").bold())
+                .title_bottom(Line::from(" Esc leaves · Ctrl-C stops a command ").right_aligned());
+            let inner = frame_block.inner(area);
+            frame.render_widget(frame_block, area);
+            area = inner;
+        }
+        let bottom = match &self.input {
             Some(input) => self.prompt_with(input),
             None => self.keys(area.width),
         };
-        let [feed_area, info_area, keys_area] = Layout::vertical([
+        let [feed_area, info_area, bottom_area] = Layout::vertical([
             Constraint::Fill(1),
-            Constraint::Length(1),
-            Constraint::Length(keys.len() as u16),
+            Constraint::Length(if in_shell { 0 } else { 1 }),
+            Constraint::Length(bottom.len() as u16),
         ])
         .areas(area);
 
-        // Lines sit at the bottom. While following, the top third fades out;
-        // a scrolled view stays at full strength for reading.
+        // Lines sit at the bottom. While watching (not in the shell, not
+        // scrolled back) the top third fades out.
         self.height = feed_area.height as usize;
+        self.width = feed_area.width;
         let following = self.feed.below() == 0;
+        let fading = following && !in_shell;
         let lines: Vec<Line> = self.feed.view(self.height).cloned().collect();
         let padding = self.height - lines.len();
         let fade = Style::new().add_modifier(Modifier::DIM);
@@ -431,7 +450,7 @@ impl App {
             .chain(lines)
             .enumerate()
             .map(|(row, line)| {
-                if following && row < self.height / 3 {
+                if fading && row < self.height / 3 {
                     line.patch_style(fade)
                 } else {
                     line
@@ -441,12 +460,12 @@ impl App {
         frame.render_widget(Paragraph::new(rows), feed_area);
 
         self.toast = (!following).then(|| self.draw_toast(frame, feed_area));
-        self.speed = Some(self.draw_info(frame, info_area));
-        frame.render_widget(Paragraph::new(keys.clone()), keys_area);
-        if self.input.is_some() {
-            let x = keys_area.x + keys.last().map_or(0, Line::width) as u16;
-            let y = keys_area.bottom().saturating_sub(1);
-            frame.set_cursor_position((x.min(keys_area.right().saturating_sub(1)), y));
+        self.speed = (!in_shell).then(|| self.draw_info(frame, info_area));
+        frame.render_widget(Paragraph::new(bottom.clone()), bottom_area);
+        if in_shell {
+            let x = bottom_area.x + bottom.last().map_or(0, Line::width) as u16;
+            let y = bottom_area.bottom().saturating_sub(1);
+            frame.set_cursor_position((x.min(bottom_area.right().saturating_sub(1)), y));
         }
     }
 

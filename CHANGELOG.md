@@ -19,8 +19,9 @@ uses [Semantic Versioning](https://semver.org/).
 - A shell prompt (`:` or `!`): run any command, see its output in the
   feed as it runs, stop it with `Ctrl-C`. When a command changes directory,
   difftop follows and watches the new folder. History with `↑`/`↓`, Tab
-  completion, paste. The prompt is your own shell's (PS1, starship, ...),
-  and colored output keeps its colors.
+  completion, paste. The prompt is your own shell's (PS1, starship, ...);
+  commands run in your shell with your aliases on a pseudo-terminal, so
+  colors and columns match your terminal. A frame marks shell mode.
 
 - Hot reload: replacing the difftop binary makes every running difftop
   switch to the new version within seconds, keeping history, scroll

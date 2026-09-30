@@ -88,11 +88,15 @@ dims nothing while scrolled, and it shows a toast with the number of
 newer lines. The toast's position is remembered so a click on it can
 resume following.
 
-**The shell prompt.** `shell::run` starts the typed line in `bash -c`,
-wrapped so that afterwards the shell writes its working directory to a
-private file (`pwd -P > $DIFFTOP_PWD_FILE`). That's how `cd` is followed
-wherever it appears in the line. stdout and stderr share one pipe, so
-errors land in order. A thread reads the pipe and sends each line to the
+**The shell prompt.** `shell::run` opens a pseudo-terminal (via `rustix`),
+sized to the feed, and starts the typed line there with
+`setsid --ctty <bash|zsh> -ic`. The shell is interactive, so the user's rc
+file and aliases load, and `setsid --ctty` makes the PTY its controlling
+terminal, so job control works. Programs see a real terminal, so colors
+and columns work, and `Running::interrupt` just types `^C` into it. The
+line is wrapped so that afterwards the shell writes its working directory
+to a private file (`pwd -P > $DIFFTOP_PWD_FILE`). That's how `cd` is
+followed wherever it appears in the line. A thread reads the pipe and sends each line to the
 frame loop as `Msg::Shell`. `Feed::show_now` puts them on screen right away
 instead of queueing them behind the animation. The prompt itself comes from the user's shell: `prompt::render` runs an
 interactive `bash`/`zsh`/`fish` that prints its fully expanded prompt, and
@@ -100,9 +104,7 @@ interactive `bash`/`zsh`/`fish` that prints its fully expanded prompt, and
 whenever the prompt opens and after each command. Until it answers, a
 plain `~/dir ❯` is shown. Command output goes through `ansi` too. It
 renders colors and drops every other escape sequence, so output can't
-control the terminal. The command gets its own
-process group, so `Ctrl-C` (`Running::interrupt`) reaches everything it
-started. When the command ends with a different working directory, `ui`
+control the terminal. When the command ends with a different working directory, `ui`
 calls `App::cd`, which is the switch described next.
 
 **Switching folders.** `watch::spawn` returns a `Handle`. `Handle::watch`
