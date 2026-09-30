@@ -31,6 +31,9 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- The shell prompt is much snappier: a shell is kept warm with its config
+  already loaded, so a command (or a `cd` moving the watch) takes effect in
+  about 50 ms instead of ~280 ms with a heavy `.bashrc`.
 - Much lower memory use: file text kept for diffing is capped at 16 MiB,
   most recently modified files first (watching a home folder went from
   ~290 MB to ~50 MB; a project stays around 10 MB).

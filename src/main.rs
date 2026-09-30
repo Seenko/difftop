@@ -11,7 +11,6 @@ mod diff;
 mod feed;
 mod filter;
 mod highlight;
-mod prompt;
 mod reload;
 mod render;
 mod shell;

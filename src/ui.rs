@@ -26,7 +26,7 @@ use crate::reload::{self, Saved, SavedLine, Upgrade};
 use crate::render::tilde;
 use crate::theme::UiColors;
 use crate::watch;
-use crate::{ansi, prompt, shell};
+use crate::{ansi, shell};
 
 /// About 30 frames per second: smooth enough, and cheap when idle.
 const FRAME: Duration = Duration::from_millis(33);
@@ -59,13 +59,9 @@ impl Entry {
 /// What the watcher thread sends to the screen.
 pub enum Msg {
     Lines(Vec<Line<'static>>),
-    Ready {
-        files: usize,
-    },
+    Ready { files: usize },
     Warning(String),
     Shell(shell::Output),
-    /// The user's prompt, rendered by their shell (see `prompt`).
-    Prompt(Option<String>),
 }
 
 pub struct App {
@@ -96,8 +92,10 @@ pub struct App {
     upgrade: Option<Upgrade>,
     /// For shell output to reach the frame loop.
     tx: Sender<Msg>,
-    /// The shell command started from the prompt, while it runs.
-    running: Option<shell::Running>,
+    /// The warm shell waiting for the next command (see `shell`), or running it.
+    shell: Option<shell::Shell>,
+    /// Whether it has been given a command that hasn't finished yet.
+    running: bool,
     /// Prompt lines run so far, oldest first, and where ↑/↓ are in them.
     history: Vec<String>,
     history_pos: Option<usize>,
@@ -155,7 +153,6 @@ pub fn run(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) -> R
                 Msg::Ready { files } => app.files = Some(files),
                 Msg::Warning(text) => app.warning = Some(text),
                 Msg::Shell(out) => app.on_shell(out),
-                Msg::Prompt(ps1) => app.ps1 = ps1.as_deref().map(ansi::lines).unwrap_or_default(),
             }
         }
         let now = Instant::now();
@@ -206,7 +203,7 @@ impl App {
             .map(|r| tilde(r))
             .collect::<Vec<_>>()
             .join("  ");
-        let app = Self {
+        let mut app = Self {
             feed,
             colors,
             label,
@@ -223,7 +220,8 @@ impl App {
             roots,
             upgrade: Upgrade::for_this_binary(),
             tx,
-            running: None,
+            shell: None,
+            running: false,
             history: Vec::new(),
             history_pos: None,
             quit_armed: None,
@@ -231,8 +229,8 @@ impl App {
             repaint: false,
             group: 0,
         };
-        // Fetch the prompt now, so it's there the moment `:` is pressed.
-        app.refresh_prompt();
+        // Warm up a shell now, so the prompt is there the moment `:` is pressed.
+        app.start_shell();
         app
     }
 
@@ -295,9 +293,9 @@ impl App {
         match key.code {
             // Like a terminal: Ctrl-C stops a running command first.
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                match &self.running {
-                    Some(running) => running.interrupt(),
-                    None => return ControlFlow::Break(()),
+                match (&self.shell, self.running) {
+                    (Some(shell), true) => shell.interrupt(),
+                    _ => return ControlFlow::Break(()),
                 }
             }
             // Esc quits only when pressed twice, with a warning in between,
@@ -306,7 +304,9 @@ impl App {
             KeyCode::Esc => self.quit_armed = Some(Instant::now()),
             KeyCode::Char(':') | KeyCode::Char('!') => {
                 self.input = Some(String::new());
-                self.refresh_prompt();
+                if self.shell.is_none() {
+                    self.start_shell();
+                }
             }
             KeyCode::Up | KeyCode::Char('k') => self.feed.scroll(1, self.height),
             KeyCode::Down | KeyCode::Char('j') => self.feed.scroll(-1, self.height),
@@ -372,26 +372,28 @@ impl App {
         if self.history.last() != Some(&line) {
             self.history.push(line.clone());
         }
-        if self.running.is_some() {
+        if self.running {
             self.notice = Some((
                 "a command is still running (Ctrl-C stops it)".into(),
                 Instant::now(),
             ));
             return;
         }
-        let cwd = std::env::current_dir().unwrap_or_default();
+        if self.shell.is_none() {
+            self.start_shell();
+        }
+        let Some(shell) = &self.shell else {
+            return;
+        };
+        if let Err(err) = shell.run(&line, self.pty_size()) {
+            self.notice = Some((format!("can't run that: {err}"), Instant::now()));
+            return;
+        }
+        self.running = true;
         self.group += 1;
         self.feed.follow();
         let echo = self.prompt_with(&line);
         self.show_in_box(echo);
-        let tx = self.tx.clone();
-        let size = (self.width, self.height as u16);
-        match shell::run(&line, &cwd, self.previous.as_deref(), size, move |out| {
-            let _ = tx.send(Msg::Shell(out));
-        }) {
-            Ok(running) => self.running = Some(running),
-            Err(err) => self.notice = Some((format!("can't run a shell: {err}"), Instant::now())),
-        }
     }
 
     /// Shows shell output as it comes, and follows the shell if it `cd`ed.
@@ -404,9 +406,14 @@ impl App {
 
     fn on_shell(&mut self, out: shell::Output) {
         match out {
+            shell::Output::Ready(prompt) => self.ps1 = ansi::lines(&prompt),
             shell::Output::Line(text) => self.show_in_box(ansi::lines(&text)),
+            // A shell that dies while idle (a broken config, say) isn't
+            // restarted until the next command, so it can't restart in a loop.
+            shell::Output::Done { .. } if !self.running => self.shell = None,
             shell::Output::Done { code, cwd } => {
-                self.running = None;
+                self.running = false;
+                self.shell = None;
                 let ending = match code {
                     Some(0) => None,
                     Some(130) | None => Some("interrupted".to_string()),
@@ -420,8 +427,8 @@ impl App {
                 if let Some(Err(err)) = moved.map(|dir| self.cd(dir)) {
                     self.notice = Some((err, Instant::now()));
                 }
-                // The prompt may show the folder, git branch, last status...
-                self.refresh_prompt();
+                // Warm up the next one, in the folder this one ended up in.
+                self.start_shell();
             }
         }
     }
@@ -619,11 +626,28 @@ impl App {
         lines
     }
 
-    /// Asks the user's shell for its prompt in the current folder, in the
-    /// background; the answer arrives as [`Msg::Prompt`].
-    fn refresh_prompt(&self) {
-        let (tx, cwd) = (self.tx.clone(), std::env::current_dir().unwrap_or_default());
-        std::thread::spawn(move || tx.send(Msg::Prompt(prompt::render(&cwd))));
+    /// Starts the next warm shell in the current folder; its prompt and
+    /// output arrive as [`Msg::Shell`].
+    fn start_shell(&mut self) {
+        let tx = self.tx.clone();
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let started = shell::Shell::start(
+            &cwd,
+            self.previous.as_deref(),
+            self.pty_size(),
+            move |out| {
+                let _ = tx.send(Msg::Shell(out));
+            },
+        );
+        match started {
+            Ok(shell) => self.shell = Some(shell),
+            Err(err) => self.notice = Some((format!("can't start a shell: {err}"), Instant::now())),
+        }
+    }
+
+    /// The terminal size commands run at: the inside of a command box.
+    fn pty_size(&self) -> (u16, u16) {
+        (self.width.max(1), (self.height as u16).max(1))
     }
 
     /// Multiplies the speed by `factor`, never going below one line a second.
@@ -675,7 +699,7 @@ impl App {
     /// Also returns the width of the speed, which is always last.
     fn status(&self) -> (Line<'static>, u16) {
         let mut parts = Vec::new();
-        if self.running.is_some() {
+        if self.running {
             parts.push("running…".to_string());
         }
         match self.files {

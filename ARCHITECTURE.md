@@ -31,9 +31,8 @@ it is for. Start there.
 | Module         | Job                                                                 | Knows about terminals? |
 | -------------- | ------------------------------------------------------------------- | ---------------------- |
 | `main.rs`      | Parses flags, wires the two threads together.                       | yes                    |
-| `shell.rs`     | Runs prompt lines in bash, streams output, reports the final cwd.   | no                     |
+| `shell.rs`     | A warm shell on a PTY: reports its prompt, runs one line, final cwd.| no                     |
 | `command.rs`   | Tab completion for the prompt.                                      | no                     |
-| `prompt.rs`    | Asks the user's shell to render its own prompt (`${PS1@P}` etc).    | no                     |
 | `ansi.rs`      | Color codes (SGR) → styled lines; drops every other escape.         | spans only             |
 | `cli.rs`       | Every command-line flag. `--help` text comes from its doc comments. | no                     |
 | `watch.rs`     | Watcher thread: inotify, batching, file cache, emits `Change`s.     | no                     |
@@ -97,24 +96,33 @@ closes around what came so far and continues below the diff. Diffs have
 no group, so they're unboxed; giving each change a group would box them
 too, without touching the drawing code. Groups survive a reload.
 
-**The shell prompt.** `shell::run` opens a pseudo-terminal (via `rustix`),
-sized to the feed, and starts the typed line there with
-`setsid --ctty <bash|zsh> -ic`. The shell is interactive, so the user's rc
-file and aliases load, and `setsid --ctty` makes the PTY its controlling
-terminal, so job control works. Programs see a real terminal, so colors
-and columns work, and `Running::interrupt` just types `^C` into it. The
-line is wrapped so that afterwards the shell writes its working directory
-to a private file (`pwd -P > $DIFFTOP_PWD_FILE`). That's how `cd` is
-followed wherever it appears in the line. A thread reads the pipe and sends each line to the
-frame loop as `Msg::Shell`. `Feed::show_now` puts them on screen right away
-instead of queueing them behind the animation. The prompt itself comes from the user's shell: `prompt::render` runs an
-interactive `bash`/`zsh`/`fish` that prints its fully expanded prompt, and
-`ansi` turns the color codes into spans. That runs in the background
-whenever the prompt opens and after each command. Until it answers, a
-plain `~/dir ❯` is shown. Command output goes through `ansi` too. It
-renders colors and drops every other escape sequence, so output can't
-control the terminal. When the command ends with a different working directory, `ui`
-calls `App::cd`, which is the switch described next.
+**The shell prompt.** Loading a user's shell config can take a quarter of
+a second (nvm, bash-completion), so difftop keeps one shell *warm*.
+`shell::Shell::start` opens a pseudo-terminal (via `rustix`) and launches
+`setsid --ctty <bash|zsh> -ic <script>` on it, in the current folder. The
+shell is interactive, so the user's rc file and aliases load, and
+`setsid --ctty` makes the PTY its controlling terminal, so job control
+works. The script runs the prompt hooks (`PROMPT_COMMAND`/`precmd`), writes
+the fully expanded prompt (`${PS1@P}`) to a private file, prints an
+invisible ready marker, and waits for one line. `ui` shows that prompt, so
+it's the user's own, and a plain `~/dir ❯` only until the first shell is
+ready. On Enter, `Shell::run` sizes the PTY to the command box and writes
+the line; it runs at once with `eval`, then the shell writes its working
+directory to another private file (`pwd -P > $DIFFTOP_PWD_FILE`), which is
+how `cd` is followed wherever it appears in the line. Programs see a real
+terminal, so colors and columns work, and `Shell::interrupt` just types
+`^C` into it. The PTY has echo off, so the line isn't printed back, and
+anything the rc file prints before the marker is dropped.
+
+A thread reads the PTY and sends everything to the frame loop as
+`Msg::Shell`. `Feed::show_now` puts output on screen right away instead of
+queueing it behind the animation. It goes through `ansi`, which renders
+colors and drops every other escape sequence, so output can't control the
+terminal. When the command ends, `ui` starts the next warm shell. If the
+command ended in a different folder, `ui` first calls `App::cd` (the
+switch described next), so the new shell starts there. A shell that dies
+while idle is only replaced at the next command, so a broken rc file
+can't cause a restart loop.
 
 **Switching folders.** `watch::spawn` returns a `Handle`. `Handle::watch`
 sends new roots over the same channel the file events use, so the watcher
@@ -162,8 +170,7 @@ it too, so a crash never leaves the terminal in mouse mode.
   interactive shell started inside difftop's session takes over difftop's
   terminal for job control: it becomes the terminal's foreground process
   group and can switch keyboard echo back on, which scrambles the screen.
-  `shell` runs commands with `setsid --ctty` on their own PTY; `prompt` uses
-  plain `setsid`, so its shell has no terminal at all.
+  `shell` runs its shells with `setsid --ctty` on their own PTY.
 - **Removed lines are not syntax-highlighted.** They're shown dimmed in the
   "removed" color. This is easier to read at a glance and means only one
   version of the file ever needs highlighting.
