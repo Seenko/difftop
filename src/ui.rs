@@ -17,7 +17,7 @@ use ratatui::crossterm::terminal::{DisableLineWrap, EnableLineWrap};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 
 use crate::command;
@@ -40,6 +40,22 @@ const WHEEL: isize = 3;
 const KEY_SPEED_STEP: f64 = 1.5;
 const WHEEL_SPEED_STEP: f64 = 1.2;
 
+/// One line of the feed. Consecutive lines with the same `group` are drawn
+/// inside one box: each shell command gets a group, so its prompt, output
+/// and exit status are boxed. Diffs have none (yet), so they stay unboxed;
+/// giving each change a group would box them too.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Entry {
+    pub line: Line<'static>,
+    pub group: Option<u32>,
+}
+
+impl Entry {
+    fn plain(line: Line<'static>) -> Self {
+        Self { line, group: None }
+    }
+}
+
 /// What the watcher thread sends to the screen.
 pub enum Msg {
     Lines(Vec<Line<'static>>),
@@ -53,7 +69,7 @@ pub enum Msg {
 }
 
 pub struct App {
-    pub feed: Feed<Line<'static>>,
+    pub feed: Feed<Entry>,
     pub colors: UiColors,
     /// What is being watched, for the footer.
     pub label: String,
@@ -87,6 +103,8 @@ pub struct App {
     history_pos: Option<usize>,
     /// When Esc was pressed once, asking for a second one to quit.
     quit_armed: Option<Instant>,
+    /// The box of the latest shell command; see [`Entry`].
+    group: u32,
     /// Set by Ctrl-L: redraw the whole screen on the next frame.
     repaint: bool,
     /// The user's own shell prompt; empty until their shell has answered.
@@ -133,7 +151,7 @@ pub fn run(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) -> R
     loop {
         while let Ok(msg) = rx.try_recv() {
             match msg {
-                Msg::Lines(lines) => app.feed.push(lines),
+                Msg::Lines(lines) => app.feed.push(lines.into_iter().map(Entry::plain)),
                 Msg::Ready { files } => app.files = Some(files),
                 Msg::Warning(text) => app.warning = Some(text),
                 Msg::Shell(out) => app.on_shell(out),
@@ -177,7 +195,7 @@ pub fn run(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) -> R
 
 impl App {
     pub fn new(
-        feed: Feed<Line<'static>>,
+        feed: Feed<Entry>,
         colors: UiColors,
         roots: Vec<PathBuf>,
         watcher: watch::Handle,
@@ -211,6 +229,7 @@ impl App {
             quit_armed: None,
             ps1: Vec::new(),
             repaint: false,
+            group: 0,
         };
         // Fetch the prompt now, so it's there the moment `:` is pressed.
         app.refresh_prompt();
@@ -219,9 +238,10 @@ impl App {
 
     /// Picks up where a previous difftop left off before it reloaded.
     pub fn resume(&mut self, saved: Saved) {
-        let lines = |saved: Vec<SavedLine>| saved.into_iter().map(Line::from).collect();
+        let entries = |saved: Vec<SavedLine>| saved.into_iter().map(Entry::from).collect();
         self.feed
-            .restore(lines(saved.shown), lines(saved.pending), saved.below);
+            .restore(entries(saved.shown), entries(saved.pending), saved.below);
+        self.group = saved.group;
         self.feed.speed = saved.speed.max(1.0);
         self.feed.paused = saved.paused;
         self.previous = saved.previous;
@@ -243,6 +263,7 @@ impl App {
             shown: shown.map(SavedLine::from).collect(),
             pending: pending.map(SavedLine::from).collect(),
             below,
+            group: self.group,
         };
         let err = reload::exec(&path, &saved);
         self.notice = Some((format!("reload failed: {err}"), Instant::now()));
@@ -251,9 +272,9 @@ impl App {
     /// A quiet line in the feed marking something that happened.
     fn marker(&mut self, text: &str) {
         self.feed.show_now([
-            Line::default(),
-            Line::styled(format!("── {text} ──"), self.colors.muted),
-            Line::default(),
+            Entry::plain(Line::default()),
+            Entry::plain(Line::styled(format!("── {text} ──"), self.colors.muted)),
+            Entry::plain(Line::default()),
         ]);
     }
 
@@ -363,9 +384,10 @@ impl App {
             return;
         }
         let cwd = std::env::current_dir().unwrap_or_default();
+        self.group += 1;
         self.feed.follow();
-        self.feed.show_now([Line::default()]);
-        self.feed.show_now(self.prompt_with(&line));
+        let echo = self.prompt_with(&line);
+        self.show_in_box(echo);
         let tx = self.tx.clone();
         let size = (self.width, self.height as u16);
         match shell::run(&line, &cwd, self.previous.as_deref(), size, move |out| {
@@ -377,9 +399,16 @@ impl App {
     }
 
     /// Shows shell output as it comes, and follows the shell if it `cd`ed.
+    /// Adds lines to the current command's box.
+    fn show_in_box(&mut self, lines: Vec<Line<'static>>) {
+        let group = Some(self.group);
+        self.feed
+            .show_now(lines.into_iter().map(|line| Entry { line, group }));
+    }
+
     fn on_shell(&mut self, out: shell::Output) {
         match out {
-            shell::Output::Line(text) => self.feed.show_now(ansi::lines(&text)),
+            shell::Output::Line(text) => self.show_in_box(ansi::lines(&text)),
             shell::Output::Done { code, cwd } => {
                 self.running = None;
                 let ending = match code {
@@ -388,8 +417,8 @@ impl App {
                     Some(code) => Some(format!("exit {code}")),
                 };
                 if let Some(ending) = ending {
-                    self.feed
-                        .show_now([Line::styled(ending, Style::new().fg(self.colors.removed))]);
+                    let style = Style::new().fg(self.colors.removed);
+                    self.show_in_box(vec![Line::styled(ending, style)]);
                 }
                 let moved = cwd.filter(|dir| std::env::current_dir().ok().as_ref() != Some(dir));
                 if let Some(Err(err)) = moved.map(|dir| self.cd(dir)) {
@@ -437,67 +466,105 @@ impl App {
 
     fn draw(&mut self, frame: &mut Frame) {
         let c = self.colors;
-        let mut area = frame.area();
+        let area = frame.area();
         frame.render_widget(
             Block::new().style(Style::new().fg(c.foreground).bg(c.background)),
             area,
         );
-        // In the shell, a frame around everything says "you're in a
-        // terminal now", and the status line makes way for the prompt.
+        // In the shell, the prompt sits in its own box and the status line
+        // makes way for it.
         let in_shell = self.input.is_some();
-        if in_shell {
-            let frame_block = Block::bordered()
+        let bottom = match &self.input {
+            Some(input) => self.prompt_with(input),
+            None => self.keys(area.width),
+        };
+        let bottom_height = bottom.len() as u16 + if in_shell { 2 } else { 0 };
+        let [feed_area, info_area, bottom_area] = Layout::vertical([
+            Constraint::Fill(1),
+            Constraint::Length(if in_shell { 0 } else { 1 }),
+            Constraint::Length(bottom_height),
+        ])
+        .areas(area);
+
+        self.height = feed_area.height as usize;
+        // Shell commands print inside a box: two border columns, two of padding.
+        self.width = feed_area.width.saturating_sub(4);
+        let following = self.feed.below() == 0;
+        self.draw_feed(frame, feed_area, following && !in_shell);
+
+        self.toast = (!following).then(|| self.draw_toast(frame, feed_area));
+        self.speed = (!in_shell).then(|| self.draw_info(frame, info_area));
+        let bottom_inner = if in_shell {
+            let prompt_box = Block::bordered()
                 .border_type(BorderType::Rounded)
                 .border_style(c.muted)
+                .padding(Padding::horizontal(1))
                 .title(self.notch("─┐", [("", "shell")], "┌"))
                 .title_bottom(
                     self.notch("┘", [("esc", " leave"), ("^C", " stop")], "└─")
                         .right_aligned(),
                 );
-            let inner = frame_block.inner(area);
-            frame.render_widget(frame_block, area);
-            area = inner;
-        }
-        let bottom = match &self.input {
-            Some(input) => self.prompt_with(input),
-            None => self.keys(area.width),
+            let inner = prompt_box.inner(bottom_area);
+            frame.render_widget(prompt_box, bottom_area);
+            inner
+        } else {
+            bottom_area
         };
-        let [feed_area, info_area, bottom_area] = Layout::vertical([
-            Constraint::Fill(1),
-            Constraint::Length(if in_shell { 0 } else { 1 }),
-            Constraint::Length(bottom.len() as u16),
-        ])
-        .areas(area);
+        frame.render_widget(Paragraph::new(bottom.clone()), bottom_inner);
+        if in_shell {
+            let x = bottom_inner.x + bottom.last().map_or(0, Line::width) as u16;
+            let y = bottom_inner.bottom().saturating_sub(1);
+            frame.set_cursor_position((x.min(bottom_inner.right().saturating_sub(1)), y));
+        }
+    }
 
-        // Lines sit at the bottom. While watching (not in the shell, not
-        // scrolled back) the top third fades out.
-        self.height = feed_area.height as usize;
-        self.width = feed_area.width;
-        let following = self.feed.below() == 0;
-        let fading = following && !in_shell;
-        let lines: Vec<Line> = self.feed.view(self.height).cloned().collect();
-        let padding = self.height - lines.len();
-        let fade = Style::new().add_modifier(Modifier::DIM);
-        let rows: Vec<Line> = std::iter::repeat_n(Line::default(), padding)
-            .chain(lines)
-            .enumerate()
-            .map(|(row, line)| {
-                if fading && row < self.height / 3 {
-                    line.patch_style(fade)
+    /// The feed, newest line at the bottom, shell commands in their boxes.
+    /// With `fading`, the top third is dimmed.
+    fn draw_feed(&self, frame: &mut Frame, area: Rect, fading: bool) {
+        let entries: Vec<&Entry> = self.feed.view(self.height).collect();
+        let pieces = pieces(&entries);
+        // Borders take rows too: keep the newest rows that fit.
+        let shown = &pieces[pieces.len().saturating_sub(self.height)..];
+        let top = area.bottom() - shown.len() as u16;
+        let border = |left: &str, right: &str| {
+            let middle = "─".repeat(area.width.saturating_sub(2) as usize);
+            Line::styled(format!("{left}{middle}{right}"), self.colors.muted)
+        };
+        for (i, piece) in shown.iter().enumerate() {
+            let y = top + i as u16;
+            let row = Rect {
+                y,
+                height: 1,
+                ..area
+            };
+            let dim = |line: Line<'static>| {
+                if fading && (y - area.y) < area.height / 3 {
+                    line.patch_style(Style::new().add_modifier(Modifier::DIM))
                 } else {
                     line
                 }
-            })
-            .collect();
-        frame.render_widget(Paragraph::new(rows), feed_area);
-
-        self.toast = (!following).then(|| self.draw_toast(frame, feed_area));
-        self.speed = (!in_shell).then(|| self.draw_info(frame, info_area));
-        frame.render_widget(Paragraph::new(bottom.clone()), bottom_area);
-        if in_shell {
-            let x = bottom_area.x + bottom.last().map_or(0, Line::width) as u16;
-            let y = bottom_area.bottom().saturating_sub(1);
-            frame.set_cursor_position((x.min(bottom_area.right().saturating_sub(1)), y));
+            };
+            match piece {
+                Piece::Plain(line) => frame.render_widget(dim((*line).clone()), row),
+                Piece::Top => frame.render_widget(dim(border("╭", "╮")), row),
+                Piece::Bottom => frame.render_widget(dim(border("╰", "╯")), row),
+                Piece::Inside(line) => {
+                    let side = dim(Line::styled("│", self.colors.muted));
+                    frame.render_widget(side.clone(), Rect { width: 1, ..row });
+                    let right = Rect {
+                        x: row.right().saturating_sub(1),
+                        width: 1,
+                        ..row
+                    };
+                    frame.render_widget(side, right);
+                    let inner = Rect {
+                        x: row.x + 2,
+                        width: row.width.saturating_sub(4),
+                        ..row
+                    };
+                    frame.render_widget(dim((*line).clone()), inner);
+                }
+            }
         }
     }
 
@@ -672,6 +739,37 @@ impl App {
     }
 }
 
+/// How one feed row is drawn.
+#[derive(Debug, PartialEq)]
+enum Piece<'a> {
+    Plain(&'a Line<'static>),
+    /// A box's top border, its content, its bottom border.
+    Top,
+    Inside(&'a Line<'static>),
+    Bottom,
+}
+
+/// Lays out entries as rows: plain lines as they are, and each run of
+/// consecutive lines of the same group wrapped in a box.
+fn pieces<'a>(entries: &[&'a Entry]) -> Vec<Piece<'a>> {
+    let mut out = Vec::new();
+    for (i, entry) in entries.iter().enumerate() {
+        let Some(group) = entry.group else {
+            out.push(Piece::Plain(&entry.line));
+            continue;
+        };
+        let same = |other: Option<&&Entry>| other.is_some_and(|e| e.group == Some(group));
+        if !same(i.checked_sub(1).and_then(|j| entries.get(j))) {
+            out.push(Piece::Top);
+        }
+        out.push(Piece::Inside(&entry.line));
+        if !same(entries.get(i + 1)) {
+            out.push(Piece::Bottom);
+        }
+    }
+    out
+}
+
 /// Whether the mouse is over `area`.
 fn hit(area: Option<Rect>, mouse: MouseEvent) -> bool {
     area.is_some_and(|a| a.contains(Position::new(mouse.column, mouse.row)))
@@ -712,6 +810,47 @@ fn tail(text: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn groups_become_boxes_and_the_rest_stays_plain() {
+        let entry = |text: &str, group| Entry {
+            line: Line::raw(text.to_string()),
+            group,
+        };
+        let entries = [
+            entry("diff", None),
+            entry("$ ls", Some(1)),
+            entry("a.rs", Some(1)),
+            entry("diff while ls runs", None),
+            entry("b.rs", Some(1)),
+            entry("$ pwd", Some(2)),
+        ];
+        let refs: Vec<&Entry> = entries.iter().collect();
+        let text = |piece: &Piece| match piece {
+            Piece::Plain(line) => format!("plain {}", line.spans[0].content),
+            Piece::Inside(line) => format!("| {}", line.spans[0].content),
+            Piece::Top => "top".into(),
+            Piece::Bottom => "bottom".into(),
+        };
+        let rows: Vec<String> = pieces(&refs).iter().map(text).collect();
+        assert_eq!(
+            rows,
+            [
+                "plain diff",
+                "top",
+                "| $ ls",
+                "| a.rs",
+                "bottom",
+                "plain diff while ls runs",
+                "top",
+                "| b.rs",
+                "bottom",
+                "top",
+                "| $ pwd",
+                "bottom",
+            ]
+        );
+    }
 
     #[test]
     fn wrap_packs_rows_in_order() {

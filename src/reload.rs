@@ -20,6 +20,8 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use serde::{Deserialize, Serialize};
 
+use crate::ui::Entry;
+
 /// How often the binary on disk is looked at.
 const CHECK_EVERY: Duration = Duration::from_secs(1);
 /// Tells a freshly started difftop where the saved state is.
@@ -40,36 +42,45 @@ pub struct Saved {
     pub pending: Vec<SavedLine>,
     /// Lines below a scrolled-back view; 0 when following.
     pub below: usize,
+    /// The latest shell command's box number, so new boxes don't reuse it.
+    pub group: u32,
 }
 
-/// A [`Line`] in a form that can be written to disk.
+/// A feed [`Entry`] in a form that can be written to disk.
 #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SavedLine {
     style: Style,
     spans: Vec<(String, Style)>,
+    group: Option<u32>,
 }
 
-impl From<&Line<'_>> for SavedLine {
-    fn from(line: &Line) -> Self {
+impl From<&Entry> for SavedLine {
+    fn from(entry: &Entry) -> Self {
         Self {
-            style: line.style,
-            spans: line
+            style: entry.line.style,
+            spans: entry
+                .line
                 .spans
                 .iter()
                 .map(|span| (span.content.to_string(), span.style))
                 .collect(),
+            group: entry.group,
         }
     }
 }
 
-impl From<SavedLine> for Line<'static> {
+impl From<SavedLine> for Entry {
     fn from(saved: SavedLine) -> Self {
         let spans: Vec<Span> = saved
             .spans
             .into_iter()
             .map(|(text, style)| Span::styled(text, style))
             .collect();
-        Line::from(spans).style(saved.style)
+        Entry {
+            line: Line::from(spans).style(saved.style),
+            group: saved.group,
+        }
     }
 }
 
@@ -211,14 +222,18 @@ mod tests {
         let saved = Saved {
             roots: vec!["/tmp".into()],
             speed: 42.0,
-            shown: vec![SavedLine::from(&line)],
+            shown: vec![SavedLine::from(&Entry {
+                line: line.clone(),
+                group: Some(4),
+            })],
             below: 3,
             ..Saved::default()
         };
         let json = serde_json::to_vec(&saved).unwrap();
         let mut back: Saved = serde_json::from_slice(&json).unwrap();
         assert_eq!(back, saved);
-        assert_eq!(Line::from(back.shown.remove(0)), line);
+        let entry = Entry::from(back.shown.remove(0));
+        assert_eq!((entry.line, entry.group), (line, Some(4)));
 
         // Unknown or missing fields don't break older/newer versions.
         let partial: Saved = serde_json::from_str(r#"{"speed": 5.0, "future": 1}"#).unwrap();

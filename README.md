@@ -81,7 +81,9 @@ again.
 Press `:` (or `!`) to get a shell prompt without leaving difftop. It's
 *your* prompt: difftop asks your shell (bash, zsh or fish) to draw it, so
 `PS1`, starship and the like look the way they do in your terminal. While
-it's open, a frame around the screen shows you're in the shell. Type any
+it's open, your prompt sits in a box at the bottom, and every command you
+run shows up in a box of its own, with the file changes flowing around
+them. Type any
 command (`ls`, `git status`, `cargo build`, ...) and its output appears as
 it runs. Commands run in your own shell with your aliases, on a real
 (pseudo-)terminal the width of difftop, so colors and columns come out

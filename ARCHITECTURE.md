@@ -88,6 +88,15 @@ dims nothing while scrolled, and it shows a toast with the number of
 newer lines. The toast's position is remembered so a click on it can
 resume following.
 
+**Boxes.** Feed entries are `ui::Entry`: a line plus an optional `group`.
+When drawing, `ui::pieces` wraps each run of consecutive lines with the
+same group in a box (top border, content, bottom border). Every other line
+is drawn as it is. Each shell command gets a new group, so its prompt,
+output and exit status are boxed. If a diff arrives while it runs, the box
+closes around what came so far and continues below the diff. Diffs have
+no group, so they're unboxed; giving each change a group would box them
+too, without touching the drawing code. Groups survive a reload.
+
 **The shell prompt.** `shell::run` opens a pseudo-terminal (via `rustix`),
 sized to the feed, and starts the typed line there with
 `setsid --ctty <bash|zsh> -ic`. The shell is interactive, so the user's rc

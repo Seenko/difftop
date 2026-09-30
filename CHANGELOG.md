@@ -21,7 +21,9 @@ uses [Semantic Versioning](https://semver.org/).
   difftop follows and watches the new folder. History with `↑`/`↓`, Tab
   completion, paste. The prompt is your own shell's (PS1, starship, ...);
   commands run in your shell with your aliases on a pseudo-terminal, so
-  colors and columns match your terminal. A frame marks shell mode.
+  colors and columns match your terminal. Each command's output is
+  boxed, with diffs flowing around the boxes; in shell mode the prompt
+  sits in its own box at the bottom.
 
 - Hot reload: replacing the difftop binary makes every running difftop
   switch to the new version within seconds, keeping history, scroll
