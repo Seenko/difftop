@@ -39,6 +39,7 @@ it is for. Start there.
 | `highlight.rs` | Text → colored spans, using bat's syntax definitions.               | spans only             |
 | `theme.rs`     | Finding/loading themes (bundled, `.tmTheme`, base16), `UiColors`.   | colors only            |
 | `render.rs`    | A `Change` → the lines shown for it (header, gutter, cutoff).       | yes                    |
+| `reload.rs`    | Notices a replaced binary, saves the screen, `exec`s the new one.   | no                     |
 | `feed.rs`      | The animation: queue, pacing, scrolling, what's visible. Pure.      | no                     |
 | `ui.rs`        | Terminal setup, frame loop, drawing, keys, mouse, toast.            | yes                    |
 
@@ -89,6 +90,20 @@ scan. Events from the old watches that are still queued fall outside the
 new roots, so the filter drops them. `cd` also changes the process's
 working directory, so relative paths, `cd -` and the file names on screen
 all follow it, like in a shell.
+
+**Hot reload.** `reload::Upgrade` checks the running binary's file once a
+second. A new build shows up as a new inode, size or modification time.
+Once the file has stayed the same for one more check, so it isn't still
+being copied, and `--version` runs successfully, `ui` saves the feed, scroll
+position, speed, pause state and watched roots (`reload::Saved`) to a 0600
+file. It then `exec`s the new binary with the same arguments and
+`DIFFTOP_RESUME` pointing at that file. The terminal isn't restored first,
+so the screen never flashes back to the shell. The new process reads and
+deletes the file in `main`, watches the saved roots instead of its
+arguments, and restores the feed. File contents in the watcher's cache
+aren't carried over; the new process rescans.
+`Saved` uses `#[serde(default)]`, so a version that adds fields can still
+read an older save. Keep new fields defaultable.
 
 **Input.** `ui::start` turns on mouse reporting, so the wheel can scroll,
 and bracketed paste. Many terminals paste on right-click; without

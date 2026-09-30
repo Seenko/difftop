@@ -41,6 +41,19 @@ you call something done.
   (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`).
 - Record user-visible changes under `Unreleased` in [CHANGELOG.md](CHANGELOG.md).
 
+## Trying a change on a real screen
+
+A running difftop reloads itself when its binary is replaced, keeping
+what's on screen. So the loop is: change code, then
+
+```bash
+cargo build --release && install -m 755 target/release/difftop ~/.local/bin/difftop
+```
+
+and any difftop already open picks it up within a couple of seconds.
+If you change `reload::Saved`, keep every field defaultable; a running
+older version hands its state to your new one.
+
 ## Seeing the TUI
 
 You can't look at a terminal directly, but tmux can show it to you:

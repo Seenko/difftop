@@ -10,6 +10,7 @@ mod diff;
 mod feed;
 mod filter;
 mod highlight;
+mod reload;
 mod render;
 mod theme;
 mod ui;
@@ -34,21 +35,13 @@ fn main() -> Result<()> {
 
     let theme = theme::load(&args.theme)?;
     let colors = theme::UiColors::from_theme(&theme);
-    let mut roots = Vec::new();
-    for path in &args.paths {
-        let root = path
-            .canonicalize()
-            .with_context(|| format!("can't watch {}", path.display()))?;
-        if !root.is_dir() {
-            bail!("{} is not a folder", path.display());
-        }
-        roots.push(root);
-    }
-    let label = roots
-        .iter()
-        .map(|r| render::tilde(r))
-        .collect::<Vec<_>>()
-        .join("  ");
+    // After a hot reload, keep watching what the previous process watched
+    // (the user may have `cd`ed since the arguments were given).
+    let resumed = reload::take();
+    let roots = match &resumed {
+        Some(saved) if !saved.roots.is_empty() => saved.roots.clone(),
+        _ => folders(&args.paths)?,
+    };
 
     // With a single folder, difftop "is in" it, like a shell: relative `cd`s
     // start there and file names are shown relative to it.
@@ -58,7 +51,7 @@ fn main() -> Result<()> {
 
     let (tx, rx) = mpsc::channel();
     let options = watch::Options {
-        roots,
+        roots: roots.clone(),
         hidden: args.hidden,
         gitignore: !args.no_ignore,
     };
@@ -77,9 +70,28 @@ fn main() -> Result<()> {
         let _ = tx.send(msg);
     });
 
-    let app = App::new(feed::Feed::new(args.speed.max(1.0)), colors, label, watcher);
+    let mut app = App::new(feed::Feed::new(args.speed.max(1.0)), colors, roots, watcher);
+    if let Some(saved) = resumed {
+        app.resume(saved);
+    }
     let mut terminal = ui::start()?;
     let result = ui::run(&mut terminal, app, rx);
     ui::stop();
     result
+}
+
+/// The folders to watch, absolute and canonical.
+fn folders(paths: &[std::path::PathBuf]) -> Result<Vec<std::path::PathBuf>> {
+    paths
+        .iter()
+        .map(|path| {
+            let root = path
+                .canonicalize()
+                .with_context(|| format!("can't watch {}", path.display()))?;
+            if !root.is_dir() {
+                bail!("{} is not a folder", path.display());
+            }
+            Ok(root)
+        })
+        .collect()
 }

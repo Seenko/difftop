@@ -129,6 +129,14 @@ You can also pass a path directly with `--theme path/to/theme.yaml`.
 If you use [tinted-shell] or base16-shell to theme your terminal, the
 `base16` and `base16-256` themes follow it the same way `ansi` does.
 
+## Updating
+
+Replace the binary, whether by re-running the installer, `cargo install`,
+or copying a new build over it. Every running difftop notices within a
+couple of seconds and reloads itself into the new version. The history on
+screen, where you've scrolled to, the speed, and the folder you `cd`ed
+into all carry over. A line in the feed marks the reload.
+
 ## Limits
 
 - difftop needs one inotify watch per folder. If you watch a huge tree, you

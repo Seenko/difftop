@@ -19,6 +19,10 @@ uses [Semantic Versioning](https://semver.org/).
 - Command line (`:` or `!`) with `cd <folder>` to watch another folder
   live, `cd -` and `cd ~`, Tab completion, and paste. What's on screen stays.
 
+- Hot reload: replacing the difftop binary makes every running difftop
+  switch to the new version within seconds, keeping history, scroll
+  position, speed, pause and the watched folder.
+
 ### Changed
 
 - `Esc` no longer quits (it closes the command line); `q` and `Ctrl-C` do.

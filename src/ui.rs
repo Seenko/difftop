@@ -21,6 +21,7 @@ use ratatui::{DefaultTerminal, Frame};
 
 use crate::command::{self, Command};
 use crate::feed::Feed;
+use crate::reload::{self, Saved, SavedLine, Upgrade};
 use crate::render::tilde;
 use crate::theme::UiColors;
 use crate::watch;
@@ -62,13 +63,19 @@ pub struct App {
     previous: Option<PathBuf>,
     /// A command-line error, shown in the footer for a few seconds.
     notice: Option<(String, Instant)>,
+    /// The folders being watched, to hand over on a reload.
+    roots: Vec<PathBuf>,
+    /// Notices when the binary on disk is replaced.
+    upgrade: Option<Upgrade>,
 }
 
 /// Takes over the terminal. Mouse reporting makes the wheel scroll, and
 /// bracketed paste makes pasted text (a right-click in many terminals)
 /// arrive as one paste event instead of a stream of fake keypresses.
 pub fn start() -> Result<DefaultTerminal> {
-    let terminal = ratatui::init();
+    let mut terminal = ratatui::init();
+    // After a reload the screen still shows the old process's last frame.
+    terminal.clear()?;
     execute!(io::stdout(), EnableMouseCapture, EnableBracketedPaste)?;
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -98,6 +105,10 @@ pub fn run(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) -> R
         app.feed.tick(now - last);
         last = now;
 
+        if app.upgrade.as_mut().is_some_and(Upgrade::ready) {
+            app.reload();
+        }
+
         terminal.draw(|frame| app.draw(frame))?;
 
         if event::poll(FRAME)? {
@@ -126,9 +137,14 @@ impl App {
     pub fn new(
         feed: Feed<Line<'static>>,
         colors: UiColors,
-        label: String,
+        roots: Vec<PathBuf>,
         watcher: watch::Handle,
     ) -> Self {
+        let label = roots
+            .iter()
+            .map(|r| tilde(r))
+            .collect::<Vec<_>>()
+            .join("  ");
         Self {
             feed,
             colors,
@@ -142,7 +158,49 @@ impl App {
             input: None,
             previous: None,
             notice: None,
+            roots,
+            upgrade: Upgrade::for_this_binary(),
         }
+    }
+
+    /// Picks up where a previous difftop left off before it reloaded.
+    pub fn resume(&mut self, saved: Saved) {
+        let lines = |saved: Vec<SavedLine>| saved.into_iter().map(Line::from).collect();
+        self.feed
+            .restore(lines(saved.shown), lines(saved.pending), saved.below);
+        self.feed.speed = saved.speed.max(1.0);
+        self.feed.paused = saved.paused;
+        self.previous = saved.previous;
+        self.marker(&format!("reloaded difftop {}", env!("CARGO_PKG_VERSION")));
+    }
+
+    /// Hands everything on screen to the new binary and becomes it. Only
+    /// comes back if that failed, with the reason in the footer.
+    fn reload(&mut self) {
+        let Some(path) = self.upgrade.as_ref().map(|u| u.path().to_path_buf()) else {
+            return;
+        };
+        let (shown, pending, below) = self.feed.contents();
+        let saved = Saved {
+            roots: self.roots.clone(),
+            previous: self.previous.clone(),
+            speed: self.feed.speed,
+            paused: self.feed.paused,
+            shown: shown.map(SavedLine::from).collect(),
+            pending: pending.map(SavedLine::from).collect(),
+            below,
+        };
+        let err = reload::exec(&path, &saved);
+        self.notice = Some((format!("reload failed: {err}"), Instant::now()));
+    }
+
+    /// A quiet line in the feed marking something that happened.
+    fn marker(&mut self, text: &str) {
+        self.feed.push([
+            Line::default(),
+            Line::styled(format!("── {text} ──"), self.colors.muted),
+            Line::default(),
+        ]);
     }
 
     fn on_key(&mut self, key: KeyEvent) -> ControlFlow<()> {
@@ -224,14 +282,8 @@ impl App {
         self.previous = here;
         self.label = tilde(&dir);
         self.files = None;
-        self.feed.push([
-            Line::default(),
-            Line::styled(
-                format!("── now watching {} ──", self.label),
-                self.colors.muted,
-            ),
-            Line::default(),
-        ]);
+        self.marker(&format!("now watching {}", self.label));
+        self.roots = vec![dir.clone()];
         self.watcher.watch(vec![dir]);
         Ok(())
     }

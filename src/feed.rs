@@ -105,6 +105,19 @@ impl<T> Feed<T> {
         self.pending.len()
     }
 
+    /// Everything the feed holds: shown lines, queued lines, and how many
+    /// lines sit below the view. Used to carry the screen across a reload.
+    pub fn contents(&self) -> (impl Iterator<Item = &T>, impl Iterator<Item = &T>, usize) {
+        (self.shown.iter(), self.pending.iter(), self.offset)
+    }
+
+    /// The reverse of [`Feed::contents`].
+    pub fn restore(&mut self, shown: Vec<T>, pending: Vec<T>, below: usize) {
+        self.shown = shown.into();
+        self.pending = pending.into();
+        self.offset = below.min(self.shown.len());
+    }
+
     pub fn clear(&mut self) {
         self.shown.clear();
         self.offset = 0;
@@ -180,6 +193,22 @@ mod tests {
 
         feed.follow();
         assert_eq!(view(&feed, 3), [11, 12, 13]);
+    }
+
+    #[test]
+    fn contents_restore_round_trip() {
+        let mut feed = Feed::new(10.0);
+        feed.push(0..10);
+        feed.tick(SECOND / 2);
+        feed.scroll(2, 3);
+        let (shown, pending, below) = feed.contents();
+        let (shown, pending): (Vec<usize>, Vec<usize>) =
+            (shown.copied().collect(), pending.copied().collect());
+
+        let mut copy = Feed::new(10.0);
+        copy.restore(shown, pending, below);
+        assert_eq!(view(&copy, 3), view(&feed, 3));
+        assert_eq!((copy.queued(), copy.below()), (feed.queued(), feed.below()));
     }
 
     #[test]
