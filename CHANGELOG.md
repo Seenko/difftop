@@ -6,6 +6,8 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-29
+
 ### Added
 
 - Watch one or more folders recursively and show each change as a
