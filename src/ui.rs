@@ -14,7 +14,9 @@ use ratatui::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::crossterm::execute;
-use ratatui::crossterm::terminal::{DisableLineWrap, EnableLineWrap};
+use ratatui::crossterm::terminal::{
+    DisableLineWrap, EnableLineWrap, disable_raw_mode, enable_raw_mode,
+};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -331,7 +333,13 @@ impl App {
             below,
             group: self.group,
         };
+        // Leave raw mode first: the new process saves the terminal's mode
+        // when it enters raw mode, to put it back on exit. Inheriting raw
+        // mode, it would "restore" raw mode and leave the shell broken
+        // (no echo, stair-stepped lines) after quitting.
+        let _ = disable_raw_mode();
         let err = reload::exec(&path, &saved);
+        let _ = enable_raw_mode();
         self.notice = Some((format!("reload failed: {err}"), Instant::now()));
     }
 
