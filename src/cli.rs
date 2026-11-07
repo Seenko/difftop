@@ -30,6 +30,15 @@ pub struct Args {
     #[arg(short = 'C', long, default_value_t = 2)]
     pub context: usize,
 
+    /// Hide the line-number column next to each diff.
+    #[arg(long)]
+    pub no_line_numbers: bool,
+
+    /// Mark changed lines by their +/- sign alone, without the colored row
+    /// background.
+    #[arg(long)]
+    pub no_change_background: bool,
+
     /// Also watch hidden files and folders (names starting with a dot).
     #[arg(long)]
     pub hidden: bool,

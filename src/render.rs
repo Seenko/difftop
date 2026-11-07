@@ -20,6 +20,8 @@ pub struct Renderer {
     pub highlighter: Highlighter,
     pub colors: UiColors,
     pub context: usize,
+    pub line_numbers: bool,
+    pub change_background: bool,
 }
 
 impl Renderer {
@@ -95,34 +97,57 @@ impl Renderer {
             .filter(|l| l.kind != Kind::Removed)
             .map(|l| l.index)
             .max();
-        let new_lines = last_new
-            .map(|last| self.highlighter.lines(path, new, last))
-            .unwrap_or_default();
-        // Removed lines are shown as plain text in the "removed" color, so
-        // the old file never needs highlighting.
-        let old_lines: Vec<&str> = old.lines().collect();
+        let last_old = hunks
+            .iter()
+            .flatten()
+            .filter(|l| l.kind == Kind::Removed)
+            .map(|l| l.index)
+            .max();
+        let highlight = |text, last: Option<usize>| {
+            last.map_or_else(Vec::new, |last| self.highlighter.lines(path, text, last))
+        };
+        let (new_lines, old_lines) = (highlight(new, last_new), highlight(old, last_old));
+        // Every row's number gets the same width, so the code lines up.
+        let width = match self.line_numbers {
+            true => last_new
+                .max(last_old)
+                .map_or(0, |i| (i + 1).to_string().len() + 1),
+            false => 0,
+        };
 
         let mut out = Vec::new();
         for (i, hunk) in hunks.iter().enumerate() {
             if i > 0 {
-                out.push(Line::styled("  ┈┈┈", c.muted));
+                out.push(Line::styled(format!("{:width$}  ┈┈┈", ""), c.muted));
             }
             for line in hunk {
-                let row = match line.kind {
-                    Kind::Added => gutter(
-                        "+ ",
-                        Style::new().fg(c.added),
-                        new_lines[line.index].clone(),
-                    ),
-                    // Bright means changed, dim means unchanged.
-                    Kind::Context => gutter("  ", c.muted, new_lines[line.index].clone())
-                        .patch_style(Style::new().add_modifier(Modifier::DIM)),
-                    Kind::Removed => {
-                        let text = clean(old_lines[line.index]);
-                        let code = vec![Span::styled(text, Style::new().fg(c.removed))];
-                        gutter("- ", Style::new().fg(c.removed), code)
-                    }
+                let (mark, code, tint) = match line.kind {
+                    Kind::Added => ("+", &new_lines[line.index], Some((c.added, c.added_bg))),
+                    Kind::Removed => ("-", &old_lines[line.index], Some((c.removed, c.removed_bg))),
+                    Kind::Context => (" ", &new_lines[line.index], None),
                 };
+                let number = match self.line_numbers {
+                    true => format!("{:>w$} ", line.index + 1, w = width - 1),
+                    false => String::new(),
+                };
+                let mut row = Line::from(vec![Span::styled(number, c.muted)]);
+                match tint {
+                    // The tint fills the whole row and leaves the syntax
+                    // colors on the text alone.
+                    Some((fg, bg)) => {
+                        row.push_span(Span::styled(format!("{mark} "), Style::new().fg(fg)));
+                        row.extend(code.iter().cloned());
+                        if self.change_background {
+                            row = row.style(Style::new().bg(bg));
+                        }
+                    }
+                    // Bright means changed, dim means unchanged.
+                    None => {
+                        row.push_span(Span::raw("  "));
+                        row.extend(code.iter().cloned());
+                        row = row.patch_style(Style::new().add_modifier(Modifier::DIM));
+                    }
+                }
                 out.push(row);
             }
         }
@@ -133,12 +158,6 @@ impl Renderer {
         }
         out
     }
-}
-
-fn gutter(mark: &'static str, style: Style, code: Vec<Span<'static>>) -> Line<'static> {
-    let mut spans = vec![Span::styled(mark, style)];
-    spans.extend(code);
-    Line::from(spans)
 }
 
 /// A byte count for people, to three significant digits so that nearby
@@ -200,6 +219,8 @@ mod tests {
             colors: UiColors::from_theme(&theme),
             highlighter: Highlighter::new(theme),
             context: 1,
+            line_numbers: true,
+            change_background: true,
         }
     }
 
@@ -230,8 +251,35 @@ mod tests {
         let texts: Vec<String> = lines.iter().map(text).collect();
         assert_eq!(
             texts,
-            ["▍ /nowhere/lib.rs  +1 −1", "  a", "- b", "+ B", "  c", ""]
+            [
+                "▍ /nowhere/lib.rs  +1 −1",
+                "1   a",
+                "2 - b",
+                "2 + B",
+                "3   c",
+                ""
+            ]
         );
+    }
+
+    #[test]
+    fn line_numbers_and_background_can_be_turned_off() {
+        let modified = change(ChangeKind::Modified, "a\nb\n", "a\nB\n");
+        let r = renderer();
+        let added = &r.render(&modified)[3];
+        assert_eq!(added.style.bg, Some(r.colors.added_bg));
+        // The syntax colors stay on the text.
+        assert!(added.spans.iter().all(|s| s.style.bg.is_none()));
+
+        let r = Renderer {
+            line_numbers: false,
+            change_background: false,
+            ..renderer()
+        };
+        let lines = r.render(&modified);
+        let texts: Vec<String> = lines.iter().map(text).collect();
+        assert_eq!(texts, ["▍ /nowhere/lib.rs  +1 −1", "  a", "- b", "+ B", ""]);
+        assert_eq!(lines[3].style.bg, None);
     }
 
     #[test]

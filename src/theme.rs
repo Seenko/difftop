@@ -216,6 +216,26 @@ fn parse_hex(value: &str) -> Result<SynColor> {
     })
 }
 
+/// A quarter of `color` over `background`: enough to mark the row while the
+/// syntax colors on top stay readable.
+fn tint(background: Color, color: Color, fallback: Color) -> Color {
+    let (Color::Rgb(r, g, b), Color::Rgb(cr, cg, cb)) = (
+        match background {
+            Color::Reset => Color::Rgb(0, 0, 0),
+            other => other,
+        },
+        color,
+    ) else {
+        // ponytail: palette colors (the default `ansi` theme) can't be mixed,
+        // so they get a fixed dark green/red, darker than any palette color so
+        // palette text stays readable on it. That assumes a dark terminal; ask
+        // the terminal for its background (OSC 11) if light ones come up.
+        return fallback;
+    };
+    let mix = |bg: u8, c: u8| ((bg as u16 * 3 + c as u16) / 4) as u8;
+    Color::Rgb(mix(r, cr), mix(g, cg), mix(b, cb))
+}
+
 /// Converts a syntect color to a terminal color. bat's `ansi` and `base16`
 /// themes smuggle palette indexes through the alpha channel: alpha 0 means
 /// "palette color number `r`", alpha 1 means "the terminal's default". That is
@@ -239,6 +259,9 @@ pub struct UiColors {
     pub accent: Color,
     pub foreground: Color,
     pub background: Color,
+    /// Row backgrounds behind added and removed lines.
+    pub added_bg: Color,
+    pub removed_bg: Color,
     /// Secondary text: context lines, separators, the status line.
     pub muted: Style,
 }
@@ -271,17 +294,20 @@ impl UiColors {
             .find(|c| *c != added && *c != removed)
             .unwrap_or(Color::Indexed(4));
         let foreground = default_fg.and_then(to_color).unwrap_or(Color::Reset);
+        let background = theme
+            .settings
+            .background
+            .and_then(to_color)
+            .unwrap_or(Color::Reset);
 
         Self {
             added,
             removed,
             accent,
             foreground,
-            background: theme
-                .settings
-                .background
-                .and_then(to_color)
-                .unwrap_or(Color::Reset),
+            background,
+            added_bg: tint(background, added, Color::Rgb(0x12, 0x3a, 0x1c)),
+            removed_bg: tint(background, removed, Color::Rgb(0x4a, 0x16, 0x1c)),
             muted: Style::new().fg(foreground).add_modifier(Modifier::DIM),
         }
     }
