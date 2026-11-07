@@ -20,6 +20,14 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- The default theme is now `claude`, which draws diffs the way Claude Code's
+  dark theme does: Monokai syntax colors, Claude Code's row backgrounds,
+  line numbers and `+`/`-` in green or red on changed rows, and a brighter
+  background behind the words that changed within a line. The old default
+  is still there as `--theme ansi`.
+- New text files are shown like Claude Code shows a written file: a
+  `Wrote 12 lines to …` header and the code, without `+` marks.
+
 - Unchanged lines around a change are no longer dimmed. On dark terminal
   palettes they were nearly unreadable, and the row background now marks
   what changed.
@@ -32,6 +40,9 @@ uses [Semantic Versioning](https://semver.org/).
   on a steady beat, and an idle screen sends nothing to the terminal.
 - Palette themes (the default `ansi`) use the same dark green and red row
   backgrounds as Claude Code (#005f00, #5f0000).
+- On a tinted row, syntax colors too close to the tint (green text on the
+  green row) switch to the normal text color, so every line stays readable.
+  New files are no longer tinted, since every line in them is new.
 
 ### Fixed
 

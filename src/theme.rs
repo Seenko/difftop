@@ -24,6 +24,9 @@ use syntect::parsing::Scope;
 use two_face::theme::EmbeddedLazyThemeSet;
 
 const MATRIX_NAME: &str = "matrix";
+/// Claude Code's look: its syntax colors (Monokai Extended) and its diff
+/// colors, taken from Claude Code's dark theme.
+const CLAUDE_NAME: &str = "claude";
 const MATRIX: &str = include_str!("../themes/matrix.tmTheme");
 
 pub fn load(name: &str) -> Result<Theme> {
@@ -33,6 +36,13 @@ pub fn load(name: &str) -> Result<Theme> {
     }
     if let Some(file) = user_themes().into_iter().find(|p| loose_eq(&stem(p), name)) {
         return load_file(&file);
+    }
+    if loose_eq(CLAUDE_NAME, name) {
+        let mut theme = two_face::theme::extra()
+            .get(two_face::theme::EmbeddedThemeName::MonokaiExtended)
+            .clone();
+        theme.name = Some("Claude".into());
+        return Ok(theme);
     }
     if loose_eq(MATRIX_NAME, name) {
         return ThemeSet::load_from_reader(&mut Cursor::new(MATRIX))
@@ -53,7 +63,7 @@ pub fn names() -> Vec<String> {
         .iter()
         .map(|t| t.as_name().to_string());
     bundled
-        .chain(std::iter::once(MATRIX_NAME.to_string()))
+        .chain([CLAUDE_NAME, MATRIX_NAME].map(String::from))
         .chain(user_themes().iter().map(|p| stem(p)))
         .collect()
 }
@@ -216,9 +226,98 @@ fn parse_hex(value: &str) -> Result<SynColor> {
     })
 }
 
-/// A quarter of `color` over `background`: enough to mark the row while the
+/// Whether text in `fg` can be read on `bg`: a contrast ratio of at least 3
+/// (the WCAG minimum for large text, generous for a glance at a diff).
+/// Terminal colors that aren't RGB are estimated with standard values.
+pub fn readable_on(fg: Color, bg: Color) -> bool {
+    // A theme's own RGB colors were chosen to go with its diff colors.
+    if matches!(fg, Color::Rgb(..)) {
+        return true;
+    }
+    let (Some(fg), Some(bg)) = (rgb(fg), rgb(bg)) else {
+        return true; // the terminal's own default colors: trust them
+    };
+    let (a, b) = (luminance(fg), luminance(bg));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05) >= 3.0
+}
+
+/// An estimate of what a terminal shows for `color`.
+fn rgb(color: Color) -> Option<(u8, u8, u8)> {
+    // ponytail: the 16 base colors are Windows Terminal's default scheme
+    // (Campbell); every terminal theme differs, so this is only an estimate.
+    // Ask the terminal for its palette (OSC 4) if it guesses wrong too often.
+    const BASE: [(u8, u8, u8); 16] = [
+        (12, 12, 12),
+        (197, 15, 31),
+        (19, 161, 14),
+        (193, 156, 0),
+        (0, 55, 218),
+        (136, 23, 152),
+        (58, 150, 221),
+        (204, 204, 204),
+        (118, 118, 118),
+        (231, 72, 86),
+        (22, 198, 12),
+        (249, 241, 165),
+        (59, 120, 255),
+        (180, 0, 158),
+        (97, 214, 214),
+        (242, 242, 242),
+    ];
+    let level = |v: u8| if v == 0 { 0 } else { 55 + v * 40 };
+    Some(match color {
+        Color::Rgb(r, g, b) => (r, g, b),
+        Color::Indexed(i @ 0..16) => BASE[i as usize],
+        Color::Indexed(i @ 16..232) => {
+            let i = i - 16;
+            (level(i / 36), level(i / 6 % 6), level(i % 6))
+        }
+        Color::Indexed(i) => {
+            let v = 8 + (i - 232) * 10;
+            (v, v, v)
+        }
+        Color::Black => BASE[0],
+        Color::Red => BASE[1],
+        Color::Green => BASE[2],
+        Color::Yellow => BASE[3],
+        Color::Blue => BASE[4],
+        Color::Magenta => BASE[5],
+        Color::Cyan => BASE[6],
+        Color::Gray => BASE[7],
+        Color::DarkGray => BASE[8],
+        Color::LightRed => BASE[9],
+        Color::LightGreen => BASE[10],
+        Color::LightYellow => BASE[11],
+        Color::LightBlue => BASE[12],
+        Color::LightMagenta => BASE[13],
+        Color::LightCyan => BASE[14],
+        Color::White => BASE[15],
+        Color::Reset => return None,
+    })
+}
+
+/// Relative luminance, as WCAG defines it.
+fn luminance((r, g, b): (u8, u8, u8)) -> f64 {
+    let channel = |v: u8| {
+        let v = v as f64 / 255.0;
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+}
+
+/// Whether the terminal says it shows 24-bit color, the way Claude Code's
+/// color library decides it.
+fn truecolor() -> bool {
+    std::env::var("COLORTERM").is_ok_and(|v| v == "truecolor" || v == "24bit")
+}
+
+/// `share` of `color` over `background`: a quarter marks a row while the
 /// syntax colors on top stay readable.
-fn tint(background: Color, color: Color, fallback: Color) -> Color {
+fn tint(background: Color, color: Color, share: f64, fallback: Color) -> Color {
     let (Color::Rgb(r, g, b), Color::Rgb(cr, cg, cb)) = (
         match background {
             Color::Reset => Color::Rgb(0, 0, 0),
@@ -232,7 +331,7 @@ fn tint(background: Color, color: Color, fallback: Color) -> Color {
         // its background (OSC 11) if light ones come up.
         return fallback;
     };
-    let mix = |bg: u8, c: u8| ((bg as u16 * 3 + c as u16) / 4) as u8;
+    let mix = |bg: u8, c: u8| (bg as f64 + (c as f64 - bg as f64) * share).round() as u8;
     Color::Rgb(mix(r, cr), mix(g, cg), mix(b, cb))
 }
 
@@ -264,12 +363,21 @@ pub struct UiColors {
     /// Row backgrounds behind added and removed lines.
     pub added_bg: Color,
     pub removed_bg: Color,
+    /// Brighter backgrounds behind the words that changed within a line.
+    pub added_word_bg: Color,
+    pub removed_word_bg: Color,
+    /// Line numbers and `+`/`-` marks on changed rows.
+    pub added_mark: Color,
+    pub removed_mark: Color,
     /// Secondary text: context lines, separators, the status line.
     pub muted: Style,
 }
 
 impl UiColors {
     pub fn from_theme(theme: &Theme) -> Self {
+        if theme.name.as_deref() == Some("Claude") {
+            return Self::claude(theme);
+        }
         let highlighter = Highlighter::new(theme);
         let default_fg = theme.settings.foreground;
         // The color a theme gives `scope`, if it gives it a color of its own.
@@ -315,8 +423,44 @@ impl UiColors {
             accent,
             foreground,
             background,
-            added_bg: tint(background, added, Color::Indexed(22)),
-            removed_bg: tint(background, removed, Color::Indexed(52)),
+            added_bg: tint(background, added, 0.25, Color::Indexed(22)),
+            removed_bg: tint(background, removed, 0.25, Color::Indexed(52)),
+            added_word_bg: tint(background, added, 0.45, Color::Indexed(28)),
+            removed_word_bg: tint(background, removed, 0.45, Color::Indexed(88)),
+            added_mark: added,
+            removed_mark: removed,
+            muted: Style::new().fg(foreground).add_modifier(Modifier::DIM),
+        }
+    }
+
+    /// Claude Code's dark-theme diff colors. Like Claude Code, row colors
+    /// are exact only where the terminal says it shows true color; elsewhere
+    /// they are the nearest of the 256 colors, which is what Claude Code
+    /// ends up showing there too.
+    fn claude(theme: &Theme) -> Self {
+        let rgb = |r, g, b| Color::Rgb(r, g, b);
+        let exact = truecolor();
+        let pick = |true_color, fallback| if exact { true_color } else { fallback };
+        let foreground = theme
+            .settings
+            .foreground
+            .and_then(to_color)
+            .unwrap_or(Color::Reset);
+        let (added, removed) = (rgb(80, 200, 80), rgb(220, 90, 90));
+        Self {
+            added,
+            removed,
+            changed: rgb(255, 193, 7),
+            accent: rgb(215, 119, 87),
+            foreground,
+            // The terminal's own background, as in Claude Code.
+            background: Color::Reset,
+            added_bg: pick(rgb(2, 40, 0), Color::Indexed(22)),
+            removed_bg: pick(rgb(61, 1, 0), Color::Indexed(52)),
+            added_word_bg: pick(rgb(4, 71, 0), Color::Indexed(28)),
+            removed_word_bg: pick(rgb(92, 2, 0), Color::Indexed(88)),
+            added_mark: added,
+            removed_mark: removed,
             muted: Style::new().fg(foreground).add_modifier(Modifier::DIM),
         }
     }
@@ -325,6 +469,22 @@ impl UiColors {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn colors_too_close_to_a_tint_are_unreadable() {
+        let (green_bg, red_bg) = (Color::Indexed(22), Color::Indexed(52));
+        // The palette's own green and blue vanish on the green tint...
+        assert!(!readable_on(Color::Indexed(2), green_bg));
+        assert!(!readable_on(Color::Indexed(4), green_bg));
+        assert!(!readable_on(Color::Indexed(1), red_bg));
+        // ...while light text stays, and so does the terminal's default.
+        assert!(readable_on(Color::Indexed(15), green_bg));
+        assert!(readable_on(Color::Indexed(11), red_bg));
+        assert!(readable_on(Color::Reset, green_bg));
+        assert!(readable_on(Color::Rgb(255, 255, 255), Color::Rgb(0, 95, 0)));
+        // A theme's own RGB colors are trusted, as Claude Code's pink on green.
+        assert!(readable_on(Color::Rgb(249, 38, 114), Color::Indexed(22)));
+    }
 
     const TINTED: &str = r##"
 system: "base16"
