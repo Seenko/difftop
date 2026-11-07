@@ -216,6 +216,85 @@ fn parse_hex(value: &str) -> Result<SynColor> {
     })
 }
 
+/// Whether text in `fg` can be read on `bg`: a contrast ratio of at least 3
+/// (the WCAG minimum for large text, generous for a glance at a diff).
+/// Terminal colors that aren't RGB are estimated with standard values.
+pub fn readable_on(fg: Color, bg: Color) -> bool {
+    let (Some(fg), Some(bg)) = (rgb(fg), rgb(bg)) else {
+        return true; // the terminal's own default colors: trust them
+    };
+    let (a, b) = (luminance(fg), luminance(bg));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05) >= 3.0
+}
+
+/// An estimate of what a terminal shows for `color`.
+fn rgb(color: Color) -> Option<(u8, u8, u8)> {
+    // ponytail: the 16 base colors are Windows Terminal's default scheme
+    // (Campbell); every terminal theme differs, so this is only an estimate.
+    // Ask the terminal for its palette (OSC 4) if it guesses wrong too often.
+    const BASE: [(u8, u8, u8); 16] = [
+        (12, 12, 12),
+        (197, 15, 31),
+        (19, 161, 14),
+        (193, 156, 0),
+        (0, 55, 218),
+        (136, 23, 152),
+        (58, 150, 221),
+        (204, 204, 204),
+        (118, 118, 118),
+        (231, 72, 86),
+        (22, 198, 12),
+        (249, 241, 165),
+        (59, 120, 255),
+        (180, 0, 158),
+        (97, 214, 214),
+        (242, 242, 242),
+    ];
+    let level = |v: u8| if v == 0 { 0 } else { 55 + v * 40 };
+    Some(match color {
+        Color::Rgb(r, g, b) => (r, g, b),
+        Color::Indexed(i @ 0..16) => BASE[i as usize],
+        Color::Indexed(i @ 16..232) => {
+            let i = i - 16;
+            (level(i / 36), level(i / 6 % 6), level(i % 6))
+        }
+        Color::Indexed(i) => {
+            let v = 8 + (i - 232) * 10;
+            (v, v, v)
+        }
+        Color::Black => BASE[0],
+        Color::Red => BASE[1],
+        Color::Green => BASE[2],
+        Color::Yellow => BASE[3],
+        Color::Blue => BASE[4],
+        Color::Magenta => BASE[5],
+        Color::Cyan => BASE[6],
+        Color::Gray => BASE[7],
+        Color::DarkGray => BASE[8],
+        Color::LightRed => BASE[9],
+        Color::LightGreen => BASE[10],
+        Color::LightYellow => BASE[11],
+        Color::LightBlue => BASE[12],
+        Color::LightMagenta => BASE[13],
+        Color::LightCyan => BASE[14],
+        Color::White => BASE[15],
+        Color::Reset => return None,
+    })
+}
+
+/// Relative luminance, as WCAG defines it.
+fn luminance((r, g, b): (u8, u8, u8)) -> f64 {
+    let channel = |v: u8| {
+        let v = v as f64 / 255.0;
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+}
+
 /// A quarter of `color` over `background`: enough to mark the row while the
 /// syntax colors on top stay readable.
 fn tint(background: Color, color: Color, fallback: Color) -> Color {
@@ -325,6 +404,20 @@ impl UiColors {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn colors_too_close_to_a_tint_are_unreadable() {
+        let (green_bg, red_bg) = (Color::Indexed(22), Color::Indexed(52));
+        // The palette's own green and blue vanish on the green tint...
+        assert!(!readable_on(Color::Indexed(2), green_bg));
+        assert!(!readable_on(Color::Indexed(4), green_bg));
+        assert!(!readable_on(Color::Indexed(1), red_bg));
+        // ...while light text stays, and so does the terminal's default.
+        assert!(readable_on(Color::Indexed(15), green_bg));
+        assert!(readable_on(Color::Indexed(11), red_bg));
+        assert!(readable_on(Color::Reset, green_bg));
+        assert!(readable_on(Color::Rgb(255, 255, 255), Color::Rgb(0, 95, 0)));
+    }
 
     const TINTED: &str = r##"
 system: "base16"
