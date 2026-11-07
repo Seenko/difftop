@@ -41,13 +41,14 @@ Says hello.
 EOF
 head -c 12000 /dev/zero > "$project/assets/logo.png"
 
-# Starts difftop on the demo project in a terminal <rows> tall. The theme
-# uses RGB colors, so the pictures don't depend on freeze's ANSI palette.
+# Starts difftop on the demo project in a terminal <rows> tall, with the
+# default theme. COLORTERM makes it use its exact RGB colors, so the pictures
+# don't depend on freeze's ANSI palette.
 start() {
     tmux kill-session -t "$session" 2>/dev/null || true
     tmux new-session -d -s "$session" -x 96 -y "$1" -c "$project" \
-        env -i HOME="$home" PATH="$PATH" TERM=xterm-256color SHELL=/bin/bash \
-        "$bin" --theme OneHalfDark
+        env -i HOME="$home" PATH="$PATH" TERM=xterm-256color COLORTERM=truecolor \
+        SHELL=/bin/bash "$bin"
     sleep 1.5
 }
 # Types a command into difftop's shell prompt and waits for it to finish.
@@ -60,7 +61,7 @@ run() {
 shot() {
     tmux capture-pane -t "$session" -p -e > "$demo/$1.ansi"
     freeze "$demo/$1.ansi" --language ansi --window --padding 20 --margin 0 \
-        --border.radius 8 --background '#282c34' --output "$out/$1.png" \
+        --border.radius 8 --background '#1a1a1a' --output "$out/$1.png" \
         < /dev/null > /dev/null # freeze waits on a non-terminal stdin otherwise
     echo "wrote docs/screenshots/$1.png"
 }
