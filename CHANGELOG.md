@@ -35,6 +35,9 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Quitting difftop after it had reloaded itself (a new build replaced its
+  binary) no longer leaves the terminal in raw mode, which showed up as no
+  echo and broken line breaks until `reset`.
 - difftop no longer crashes on text files with lone carriage returns, such
   as logs with progress bars. Those `\r` are now shown as `␍` instead of
   disappearing.
