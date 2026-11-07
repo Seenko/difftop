@@ -39,8 +39,9 @@ it is for. Start there.
 | `filter.rs`    | Which paths are ignored (`.gitignore`, hidden, `.git`).             | no                     |
 | `diff.rs`      | Old + new text → hunks of `DiffLine`s.                              | no                     |
 | `highlight.rs` | Text → colored spans, using bat's syntax definitions.               | spans only             |
-| `theme.rs`     | Finding/loading themes (bundled, `.tmTheme`, base16), `UiColors`.   | colors only            |
+| `theme.rs`     | Finding/loading themes (built-in, `.tmTheme`, base16), `UiColors`.  | colors only            |
 | `render.rs`    | A `Change` → the lines shown for it (header, gutter, cutoff).       | yes                    |
+| `flicker.rs`   | The matrix theme's flicker: random dips in a frame's brightness.    | colors only            |
 | `reload.rs`    | Notices a replaced binary, saves the screen, `exec`s the new one.   | no                     |
 | `feed.rs`      | The animation: queue, pacing, scrolling, what's visible. Pure.      | no                     |
 | `ui.rs`        | Terminal setup, frame loop, drawing, keys, mouse, toast.            | yes                    |

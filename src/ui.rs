@@ -22,6 +22,7 @@ use ratatui::{DefaultTerminal, Frame};
 
 use crate::command;
 use crate::feed::Feed;
+use crate::flicker::Flicker;
 use crate::reload::{self, Saved, SavedLine, Upgrade};
 use crate::render::tilde;
 use crate::theme::UiColors;
@@ -107,6 +108,8 @@ pub struct App {
     repaint: bool,
     /// The user's own shell prompt; empty until their shell has answered.
     ps1: Vec<Line<'static>>,
+    /// Only the matrix theme has one; see [`crate::theme::flickers`].
+    flicker: Option<Flicker>,
 }
 
 /// Takes over the terminal. Mouse reporting makes the wheel scroll, and
@@ -166,7 +169,12 @@ pub fn run(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) -> R
         if std::mem::take(&mut app.repaint) {
             terminal.clear()?;
         }
-        terminal.draw(|frame| app.draw(frame))?;
+        terminal.draw(|frame| {
+            app.draw(frame);
+            if let Some(flicker) = &mut app.flicker {
+                flicker.apply(frame.buffer_mut());
+            }
+        })?;
 
         if event::poll(FRAME)? {
             let flow = match event::read()? {
@@ -197,6 +205,7 @@ impl App {
         roots: Vec<PathBuf>,
         watcher: watch::Handle,
         tx: Sender<Msg>,
+        flicker: Option<Flicker>,
     ) -> Self {
         let label = roots
             .iter()
@@ -228,6 +237,7 @@ impl App {
             ps1: Vec::new(),
             repaint: false,
             group: 0,
+            flicker,
         };
         // Warm up a shell now, so the prompt is there the moment `:` is pressed.
         app.start_shell();

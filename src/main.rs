@@ -10,6 +10,7 @@ mod command;
 mod diff;
 mod feed;
 mod filter;
+mod flicker;
 mod highlight;
 mod reload;
 mod render;
@@ -37,6 +38,7 @@ fn main() -> Result<()> {
 
     let theme = theme::load(&args.theme)?;
     let colors = theme::UiColors::from_theme(&theme);
+    let flicker = theme::flickers(&theme).then(flicker::Flicker::new);
     // After a hot reload, keep watching what the previous process watched
     // (the user may have `cd`ed since the arguments were given).
     let resumed = reload::take();
@@ -79,6 +81,7 @@ fn main() -> Result<()> {
         roots,
         watcher,
         shell_tx,
+        flicker,
     );
     if let Some(saved) = resumed {
         app.resume(saved);

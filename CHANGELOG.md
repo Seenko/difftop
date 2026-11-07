@@ -6,6 +6,11 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- A built-in `matrix` theme: green CRT phosphor on near-black, with a random
+  flicker. Pick it with `--theme matrix`.
+
 ## [0.2.0] - 2026-09-29
 
 ### Added

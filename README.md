@@ -112,6 +112,9 @@ To choose a different theme, run `difftop --list-themes` and pass a name with
 `--theme`. Case and punctuation don't matter, so `solarized-dark` finds
 `Solarized (dark)`. Besides `ansi` you can use:
 
+- **`matrix`**, green CRT phosphor on near-black. Everything is a shade of
+  green, removed lines are a dimmer green than added ones, and the screen
+  flickers now and then.
 - **The themes bundled from [bat]**, for example Dracula, Nord, gruvbox, Catppuccin,
   Solarized, Monokai and OneHalf.
 - **Any [base16/base24] scheme.** There are hundreds. To install all of them at once:
