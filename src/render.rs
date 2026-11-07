@@ -3,13 +3,13 @@
 use std::cmp::Ordering;
 use std::path::Path;
 
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use crate::bytemap::{ByteMap, State};
 use crate::diff::{self, Kind};
 use crate::highlight::{Highlighter, clean};
-use crate::theme::UiColors;
+use crate::theme::{self, UiColors};
 #[cfg(test)]
 use crate::watch::Snapshot;
 use crate::watch::{Change, ChangeKind};
@@ -79,7 +79,10 @@ impl Renderer {
 
         let mut out = vec![Line::from(header)];
         if let (Some((old, new)), Some(hunks)) = (texts, &hunks) {
-            out.extend(self.body(&change.path, old, new, hunks));
+            // A new file is all additions: tinting every line says nothing
+            // and floods the screen with green, so only edits are tinted.
+            let tinted = self.change_background && change.kind == ChangeKind::Modified;
+            out.extend(self.body(&change.path, old, new, hunks, tinted));
         }
         if let Some(map) = &change.map {
             out.extend(self.byte_map(map));
@@ -94,6 +97,7 @@ impl Renderer {
         old: &str,
         new: &str,
         hunks: &[Vec<diff::DiffLine>],
+        tinted: bool,
     ) -> Vec<Line<'static>> {
         let c = &self.colors;
         let last_new = hunks
@@ -142,12 +146,25 @@ impl Renderer {
                 match tint {
                     // The tint fills the whole row and leaves the syntax
                     // colors on the text alone.
-                    Some((fg, bg)) => {
+                    Some((fg, bg)) if tinted => {
+                        // On the tint, a syntax color close to it (green text
+                        // on green) becomes the normal text color instead.
+                        let readable = |color: Color| match theme::readable_on(color, bg) {
+                            true => color,
+                            false => c.foreground,
+                        };
+                        let mark = Span::styled(format!("{mark} "), Style::new().fg(readable(fg)));
+                        row.push_span(mark);
+                        row.extend(code.iter().map(|span| {
+                            let mut span = span.clone();
+                            span.style.fg = span.style.fg.map(readable);
+                            span
+                        }));
+                        row = row.style(Style::new().bg(bg));
+                    }
+                    Some((fg, _)) => {
                         row.push_span(Span::styled(format!("{mark} "), Style::new().fg(fg)));
                         row.extend(code.iter().cloned());
-                        if self.change_background {
-                            row = row.style(Style::new().bg(bg));
-                        }
                     }
                     // Unchanged lines keep their full colors: dimming them on
                     // top of a dark palette made them unreadable, and the
@@ -373,6 +390,22 @@ mod tests {
         let texts: Vec<String> = lines.iter().map(text).collect();
         assert_eq!(texts[2], "  2 - 10%␍20%");
         assert_eq!(texts[3], "  2 + 10%␍20%␍30%");
+    }
+
+    #[test]
+    fn tinted_rows_swap_unreadable_colors_and_new_files_arent_tinted() {
+        let r = renderer();
+        let modified = r.render(&change(ChangeKind::Modified, "a\n", "b\n"));
+        let added = &modified[2];
+        assert_eq!(added.style.bg, Some(r.colors.added_bg));
+        // The "+" would be green on green: it takes the text color.
+        let mark = added.spans.iter().find(|s| s.content == "+ ").unwrap();
+        assert_eq!(mark.style.fg, Some(r.colors.foreground));
+
+        let created = r.render(&change(ChangeKind::Created, "", "a\nb\n"));
+        assert!(created.iter().all(|l| l.style.bg.is_none()));
+        let mark = created[1].spans.iter().find(|s| s.content == "+ ").unwrap();
+        assert_eq!(mark.style.fg, Some(r.colors.added));
     }
 
     #[test]

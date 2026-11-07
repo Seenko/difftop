@@ -32,6 +32,9 @@ uses [Semantic Versioning](https://semver.org/).
   on a steady beat, and an idle screen sends nothing to the terminal.
 - Palette themes (the default `ansi`) use the same dark green and red row
   backgrounds as Claude Code (#005f00, #5f0000).
+- On a tinted row, syntax colors too close to the tint (green text on the
+  green row) switch to the normal text color, so every line stays readable.
+  New files are no longer tinted, since every line in them is new.
 
 ### Fixed
 
