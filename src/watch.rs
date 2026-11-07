@@ -338,16 +338,42 @@ fn text_len(snapshot: &Snapshot) -> usize {
     snapshot.text.as_ref().map_or(0, String::len)
 }
 
-/// The file's content if it is small, valid UTF-8 and not binary.
+/// The file's content if it is small and text.
 fn read_text(path: &Path, size: u64) -> Option<String> {
     if size > MAX_FILE_SIZE {
         return None;
     }
-    let bytes = fs::read(path).ok()?;
+    decode(fs::read(path).ok()?)
+}
+
+/// Text in the encodings editors actually save: UTF-8, UTF-16 with a byte
+/// order mark (Visual Studio's "Unicode"), or a legacy 8-bit code page.
+/// A NUL byte anywhere else means binary.
+fn decode(bytes: Vec<u8>) -> Option<String> {
+    let utf16 = |be: bool| {
+        let units = bytes[2..].chunks(2).map(|c| match c {
+            [a, b] if be => u16::from_be_bytes([*a, *b]),
+            [a, b] => u16::from_le_bytes([*a, *b]),
+            _ => 0xFFFD,
+        });
+        char::decode_utf16(units)
+            .collect::<Result<String, _>>()
+            .ok()
+    };
+    match bytes.get(..2) {
+        Some([0xFF, 0xFE]) => return utf16(false),
+        Some([0xFE, 0xFF]) => return utf16(true),
+        _ => {}
+    }
     if bytes.contains(&0) {
         return None;
     }
-    String::from_utf8(bytes).ok()
+    String::from_utf8(bytes)
+        // ponytail: read as Latin-1, so Windows-1252's 0x80-0x9F (curly
+        // quotes, euro) come out as control characters; add a real code page
+        // table if that shows up.
+        .or_else(|e| Ok::<_, ()>(e.into_bytes().iter().map(|&b| b as char).collect()))
+        .ok()
 }
 
 enum Batch {
@@ -385,6 +411,22 @@ fn next_batch(rx: &Receiver<Input>) -> Option<Batch> {
 mod tests {
     use super::*;
     use std::sync::mpsc::Receiver;
+
+    #[test]
+    fn decodes_what_editors_save_and_rejects_binary() {
+        let text = |b: &[u8]| decode(b.to_vec());
+        assert_eq!(text(b"class A {}\n").as_deref(), Some("class A {}\n"));
+        assert_eq!(
+            text(b"\xEF\xBB\xBFclass A").as_deref(),
+            Some("\u{FEFF}class A")
+        );
+        // Visual Studio's "Unicode" encoding: UTF-16 with a byte order mark.
+        assert_eq!(text(b"\xFF\xFEc\0s\0").as_deref(), Some("cs"));
+        assert_eq!(text(b"\xFE\xFF\0c\0s").as_deref(), Some("cs"));
+        // A legacy code page: "café" in Windows-1252.
+        assert_eq!(text(b"caf\xE9").as_deref(), Some("café"));
+        assert_eq!(text(b"PNG\0\x01"), None);
+    }
 
     /// Starts a real watcher on a temp folder and returns its event stream
     /// once the startup scan is done.
