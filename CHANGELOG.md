@@ -11,6 +11,11 @@ uses [Semantic Versioning](https://semver.org/).
 - A built-in `matrix` theme: green CRT phosphor on near-black, with a random
   flicker. Pick it with `--theme matrix`.
 
+### Fixed
+
+- The built-in shell no longer hangs when the shell's config prints something
+  without a final newline, such as fastfetch.
+
 ## [0.2.0] - 2026-09-29
 
 ### Added
