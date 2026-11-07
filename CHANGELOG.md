@@ -10,6 +10,10 @@ uses [Semantic Versioning](https://semver.org/).
 
 - A built-in `matrix` theme: green CRT phosphor on near-black, with a random
   flicker. Pick it with `--theme matrix`.
+- Diffs show line numbers, and added and removed lines get a tinted row
+  background that keeps their syntax colors. Removed lines are now syntax
+  highlighted too. Turn these off with `--no-line-numbers` and
+  `--no-change-background`.
 
 ### Fixed
 

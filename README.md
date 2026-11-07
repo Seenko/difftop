@@ -12,7 +12,9 @@ editor, a formatter or five coding agents at once.
 
 New changes enter at the bottom and push older ones up. Brightness means
 one thing: added and removed lines are bright, and the unchanged lines
-around them are dim. Changes that arrive in a burst are queued and
+around them are dim. Changed lines also sit on a green or red background
+that leaves their syntax colors alone, and every line shows its line number
+(`--no-change-background` and `--no-line-numbers` turn those off). Changes that arrive in a burst are queued and
 released at a steady pace, so they scroll in instead of appearing all at once.
 
 ## Install

@@ -63,6 +63,8 @@ fn main() -> Result<()> {
         highlighter: highlight::Highlighter::new(theme),
         colors,
         context: args.context,
+        line_numbers: !args.no_line_numbers,
+        change_background: !args.no_change_background,
     };
     let shell_tx = tx.clone();
     let watcher = watch::spawn(options, move |event| {
