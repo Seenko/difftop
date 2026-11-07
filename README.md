@@ -84,7 +84,7 @@ What gets watched:
   space, up to `▓` for compressed or random data.
 
   ```
-  ▍ app.db  5.23 MiB → 5.81 MiB  +600 KiB
+  Updated app.db (5.23 MiB → 5.81 MiB, +600 KiB)
     ▓························▓▓▓▓▓▓███▓▓▓▓▓▓▓▓░░████
     0                              ↑3.76 MiB    ↑5.23 MiB
   ```

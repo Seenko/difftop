@@ -1,13 +1,14 @@
 //! The terminal side: setup, the frame loop, drawing, keys, mouse, and the
 //! `:` command line.
 
-use std::io;
+use std::io::{self, Write};
 use std::ops::ControlFlow;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -18,7 +19,7 @@ use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
-use ratatui::{DefaultTerminal, Frame};
+use ratatui::{Frame, Terminal};
 
 use crate::command;
 use crate::feed::Feed;
@@ -118,8 +119,11 @@ pub struct App {
 /// Line wrapping goes off so drawing the bottom-right cell can never make
 /// the terminal scroll (Windows Terminal does, via ConPTY), which would
 /// shift the real screen away from what ratatui thinks is on it.
-pub fn start() -> Result<DefaultTerminal> {
-    let mut terminal = ratatui::init();
+pub fn start() -> Result<Term> {
+    // init sets up raw mode, the alternate screen and the panic hook; the
+    // terminal it returns is replaced by one that writes whole frames.
+    drop(ratatui::init());
+    let mut terminal = Terminal::new(CrosstermBackend::new(Frames::new(io::stdout())))?;
     // After a reload the screen still shows the old process's last frame.
     terminal.clear()?;
     execute!(
@@ -147,8 +151,56 @@ pub fn stop() {
     ratatui::restore();
 }
 
-pub fn run(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) -> Result<()> {
+pub type Term = Terminal<CrosstermBackend<Frames<io::Stdout>>>;
+
+/// Sends each frame to the terminal as one synchronized update (DEC mode
+/// 2026): the terminal holds it back until it is complete and shows it at
+/// once, so a scroll that rewrites every row is never seen half drawn.
+/// Terminals that don't know the mode ignore it. A frame with nothing to
+/// change sends nothing at all, so an idle screen stays silent.
+pub struct Frames<W: Write> {
+    out: W,
+    pending: Vec<u8>,
+}
+
+impl<W: Write> Frames<W> {
+    fn new(out: W) -> Self {
+        Self {
+            out,
+            pending: Vec::new(),
+        }
+    }
+}
+
+impl<W: Write> Write for Frames<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.pending.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        // ratatui ends every frame by resetting the colors and hiding the
+        // cursor, even when no cell changed. Such a frame changes nothing on
+        // screen, so it isn't sent.
+        // ponytail: matches ratatui's exact bytes; if a ratatui update
+        // changes them, idle frames are sent again (harmless, just not silent).
+        const IDLE: &[u8] = b"\x1b[39m\x1b[49m\x1b[59m\x1b[0m\x1b[?25l";
+        if self.pending == IDLE {
+            self.pending.clear();
+        }
+        if !self.pending.is_empty() {
+            self.out.write_all(b"\x1b[?2026h")?;
+            self.out.write_all(&self.pending)?;
+            self.out.write_all(b"\x1b[?2026l")?;
+            self.pending.clear();
+        }
+        self.out.flush()
+    }
+}
+
+pub fn run(terminal: &mut Term, mut app: App, rx: Receiver<Msg>) -> Result<()> {
     let mut last = Instant::now();
+    let mut next_frame = Instant::now();
     loop {
         while let Ok(msg) = rx.try_recv() {
             match msg {
@@ -176,7 +228,15 @@ pub fn run(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) -> R
             }
         })?;
 
-        if event::poll(FRAME)? {
+        // Frames start on a fixed beat, whatever drawing took, so motion
+        // stays even. Input wakes us at once without moving the beat, and
+        // after falling behind (a suspended process) we skip ahead rather
+        // than race through the missed frames.
+        let now = Instant::now();
+        while next_frame <= now {
+            next_frame += FRAME;
+        }
+        if event::poll(next_frame - now)? {
             let flow = match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => app.on_key(key),
                 Event::Mouse(mouse) => app.on_mouse(mouse),
@@ -787,6 +847,22 @@ fn tail(text: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frames_are_wrapped_and_empty_ones_send_nothing() {
+        let mut frames = Frames::new(Vec::new());
+        frames.flush().unwrap();
+        frames
+            .write_all(b"\x1b[39m\x1b[49m\x1b[59m\x1b[0m\x1b[?25l")
+            .unwrap();
+        frames.flush().unwrap();
+        assert!(frames.out.is_empty());
+        frames.write_all(b"abc").unwrap();
+        frames.write_all(b"def").unwrap();
+        frames.flush().unwrap();
+        frames.flush().unwrap();
+        assert_eq!(frames.out, b"\x1b[?2026habcdef\x1b[?2026l");
+    }
 
     #[test]
     fn groups_become_boxes_and_the_rest_stays_plain() {
