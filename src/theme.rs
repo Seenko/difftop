@@ -227,9 +227,9 @@ fn tint(background: Color, color: Color, fallback: Color) -> Color {
         color,
     ) else {
         // ponytail: palette colors (the default `ansi` theme) can't be mixed,
-        // so they get a fixed dark green/red, darker than any palette color so
-        // palette text stays readable on it. That assumes a dark terminal; ask
-        // the terminal for its background (OSC 11) if light ones come up.
+        // so they get xterm's dark green and red (#005f00, #5f0000), the same
+        // as Claude Code. That assumes a dark terminal; ask the terminal for
+        // its background (OSC 11) if light ones come up.
         return fallback;
     };
     let mix = |bg: u8, c: u8| ((bg as u16 * 3 + c as u16) / 4) as u8;
@@ -255,6 +255,8 @@ pub fn to_color(c: SynColor) -> Option<Color> {
 pub struct UiColors {
     pub added: Color,
     pub removed: Color,
+    /// Bytes that changed in place, in a binary file's map.
+    pub changed: Color,
     /// File names in change headers.
     pub accent: Color,
     pub foreground: Color,
@@ -286,6 +288,12 @@ impl UiColors {
             // Some themes style both the same, which says nothing.
             (added, removed) = (None, None);
         }
+        // Palette themes say magenta here, which reads as just another
+        // syntax color; yellow reads as "changed", like the theme's own
+        // colors do in true-color themes.
+        let changed = scope_color("markup.changed")
+            .filter(|c| Some(*c) != added && Some(*c) != removed && matches!(c, Color::Rgb(..)))
+            .unwrap_or(Color::Indexed(3));
         let added = added.unwrap_or(Color::Indexed(2));
         let removed = removed.unwrap_or(Color::Indexed(1));
         let accent = ["markup.heading", "entity.name.function", "keyword"]
@@ -303,11 +311,12 @@ impl UiColors {
         Self {
             added,
             removed,
+            changed,
             accent,
             foreground,
             background,
-            added_bg: tint(background, added, Color::Rgb(0x12, 0x3a, 0x1c)),
-            removed_bg: tint(background, removed, Color::Rgb(0x4a, 0x16, 0x1c)),
+            added_bg: tint(background, added, Color::Indexed(22)),
+            removed_bg: tint(background, removed, Color::Indexed(52)),
             muted: Style::new().fg(foreground).add_modifier(Modifier::DIM),
         }
     }

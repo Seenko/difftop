@@ -38,6 +38,7 @@ it is for. Start there.
 | `watch.rs`     | Watcher thread: inotify, batching, file cache, emits `Change`s.     | no                     |
 | `filter.rs`    | Which paths are ignored (`.gitignore`, hidden, `.git`).             | no                     |
 | `diff.rs`      | Old + new text → hunks of `DiffLine`s.                              | no                     |
+| `bytemap.rs`   | Binary files: block hashes, and where the new bytes differ.         | no                     |
 | `highlight.rs` | Text → colored spans, using bat's syntax definitions.               | spans only             |
 | `theme.rs`     | Finding/loading themes (built-in, `.tmTheme`, base16), `UiColors`.  | colors only            |
 | `render.rs`    | A `Change` → the lines shown for it (header, gutter, cutoff).       | yes                    |
@@ -71,7 +72,11 @@ it is for. Start there.
    down to the last line needed, and each line gets a `+`, `-` or blank
    gutter. If they don't (binary files, files over 1 MiB, text that wasn't
    in memory yet), the header shows the size change instead, e.g.
-   `12.0 KiB → 14.1 KiB  +2.10 KiB`. Nothing that changes goes unshown.
+   `12.0 KiB → 14.1 KiB  +2.10 KiB`. A binary file whose block hashes
+   were known also gets a bar showing where it changed: `bytemap::scan`
+   reads the new bytes once, in a stream, hashes them along the old block
+   borders, and the blocks whose hash differs light up. Nothing that
+   changes goes unshown.
    Every change gets a header and a blank spacer after it.
 5. **Animate** (`feed::Feed`). The lines join a queue. On every frame,
    `tick` moves some of them onto the screen. The rate is `speed` plus half

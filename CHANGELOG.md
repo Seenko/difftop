@@ -8,12 +8,25 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Binary files get a bar under their header that shows where in the file
+  the bytes changed, where it grew and where it was cut off, with offsets.
+  It works for files of any size in constant memory.
 - A built-in `matrix` theme: green CRT phosphor on near-black, with a random
   flicker. Pick it with `--theme matrix`.
 - Diffs show line numbers, and added and removed lines get a tinted row
   background that keeps their syntax colors. Removed lines are now syntax
   highlighted too. Turn these off with `--no-line-numbers` and
   `--no-change-background`.
+
+### Changed
+
+- Unchanged lines around a change are no longer dimmed. On dark terminal
+  palettes they were nearly unreadable, and the row background now marks
+  what changed.
+- The file name in a change's header uses the normal text color instead of
+  the accent color.
+- Palette themes (the default `ansi`) use the same dark green and red row
+  backgrounds as Claude Code (#005f00, #5f0000).
 
 ### Fixed
 

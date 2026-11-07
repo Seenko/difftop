@@ -10,12 +10,12 @@ editor, a formatter or five coding agents at once.
 
 ![difftop showing a Rust edit, a new file and a binary file's size change](docs/screenshots/feed.png)
 
-New changes enter at the bottom and push older ones up. Brightness means
-one thing: added and removed lines are bright, and the unchanged lines
-around them are dim. Changed lines also sit on a green or red background
-that leaves their syntax colors alone, and every line shows its line number
-(`--no-change-background` and `--no-line-numbers` turn those off). Changes that arrive in a burst are queued and
-released at a steady pace, so they scroll in instead of appearing all at once.
+New changes enter at the bottom and push older ones up. Added and removed
+lines sit on a green or red background that leaves their syntax colors
+alone, and every line shows its line number (`--no-change-background` and
+`--no-line-numbers` turn those off). Changes that arrive in a burst are
+queued and released at a steady pace, so they scroll in instead of
+appearing all at once.
 
 ## Install
 
@@ -76,7 +76,25 @@ What gets watched:
 - Hidden files and folders are skipped. `--hidden` includes them.
 - `.git` is always skipped.
 - Binary files and files over 1 MiB can't be diffed, so they show their size
-  change instead, e.g. `12.0 KiB → 14.1 KiB  +2.10 KiB`.
+  change instead, e.g. `12.0 KiB → 14.1 KiB  +2.10 KiB`. Binary files also
+  get a bar that stands for the whole file, from its start on the left to
+  its end on the right. It lights up where bytes changed (yellow), where
+  the file grew (green) or where it was cut off (red), with the offset of
+  each change below it. Unchanged parts show a texture: `·` for empty
+  space, up to `▓` for compressed or random data.
+
+  ```
+  ▍ app.db  5.23 MiB → 5.81 MiB  +600 KiB
+    ▓························▓▓▓▓▓▓███▓▓▓▓▓▓▓▓░░████
+    0                              ↑3.76 MiB    ↑5.23 MiB
+  ```
+
+  The bar works for files of any size: difftop keeps only 48 hashes per
+  file, never the bytes, and hashes a 1 GiB file in about 0.2 s. A binary
+  file gets its bar from its second change on. Files over 1 MiB aren't
+  read at startup, and difftop only learns their layout on the first
+  change. A file over 64 MiB that's being written non-stop is looked at
+  again at most every 2 seconds.
 
 ### The built-in shell
 
