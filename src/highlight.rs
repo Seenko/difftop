@@ -37,10 +37,23 @@ impl Highlighter {
         LinesWithEndings::from(text)
             .take(last + 1)
             .map(|line| match state.highlight_line(line, &self.syntaxes) {
-                Ok(pieces) => pieces
-                    .into_iter()
-                    .map(|(style, piece)| Span::styled(clean(piece), to_style(style)))
-                    .collect(),
+                // Only the last piece holds the line ending; a `\r` that ends
+                // an earlier piece is content and must stay visible.
+                Ok(pieces) => {
+                    let last = pieces.len().saturating_sub(1);
+                    pieces
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, (style, piece))| {
+                            let text = if i == last {
+                                clean(piece)
+                            } else {
+                                defuse(piece)
+                            };
+                            Span::styled(text, to_style(style))
+                        })
+                        .collect()
+                }
                 // A broken syntax definition shouldn't hide the change.
                 Err(_) => vec![Span::raw(clean(line))],
             })
@@ -66,8 +79,13 @@ impl Highlighter {
 /// expands tabs, and replaces control characters with visible symbols (`␛`
 /// for escape) so a watched file can never send commands to the terminal.
 pub fn clean(piece: &str) -> String {
+    defuse(piece.trim_end_matches(['\n', '\r']))
+}
+
+/// [`clean`] without stripping a line ending.
+fn defuse(piece: &str) -> String {
     let mut out = String::with_capacity(piece.len());
-    for ch in piece.trim_end_matches(['\n', '\r']).chars() {
+    for ch in piece.chars() {
         match ch {
             '\t' => out.push_str("    "),
             // C0 controls have printable "control picture" twins at U+2400.

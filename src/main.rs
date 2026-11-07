@@ -5,6 +5,7 @@
 //! See ARCHITECTURE.md for the full picture.
 
 mod ansi;
+mod bytemap;
 mod cli;
 mod command;
 mod diff;

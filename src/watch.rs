@@ -1,8 +1,10 @@
 //! Watches folders and reports what changed in each file.
 //!
 //! On startup every folder under the roots gets its own (non-recursive)
-//! inotify watch and every small text file is read into memory, so the first
-//! edit to a file can already be shown as a diff. Folders created later are
+//! inotify watch and every small file is read: text files are kept in
+//! memory, so the first edit to one can already be shown as a diff, and
+//! binary files are kept as block hashes ([`crate::bytemap`]), so the first
+//! change can show where it happened. Folders created later are
 //! picked up as they appear. Ignored folders (`target/`, `node_modules/`, ...)
 //! are never watched at all, which keeps us far away from the kernel's watch
 //! limit on big trees.
@@ -21,10 +23,17 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::Result;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
+use crate::bytemap::{self, Blocks, ByteMap};
 use crate::filter::Filter;
 
-/// Files bigger than this are tracked by size instead of diffed.
+/// Files bigger than this are tracked by size instead of diffed, and aren't
+/// read during the startup scan.
 const MAX_FILE_SIZE: u64 = 1024 * 1024;
+/// Binary files bigger than this that keep changing (a download, a database
+/// under load) are hashed again at most every [`BIG_FILE_PAUSE`]; the
+/// changes in between show up without a map.
+const BIG_FILE: u64 = 64 * 1024 * 1024;
+const BIG_FILE_PAUSE: Duration = Duration::from_secs(2);
 /// How much file text is kept in memory for diffing, in total. The most
 /// recently modified files get it first; a file without its text still shows
 /// up when it changes (as a size change) and is diffed from then on.
@@ -47,7 +56,7 @@ pub enum Event {
     Ready {
         files: usize,
     },
-    Change(Change),
+    Change(Box<Change>),
     /// Something the user should know about, e.g. hitting the watch limit.
     Warning(String),
 }
@@ -60,6 +69,8 @@ pub struct Change {
     pub before: Snapshot,
     /// The file after the change; empty for `Deleted`.
     pub after: Snapshot,
+    /// Where a binary file changed, when its blocks were known before.
+    pub map: Option<ByteMap>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,17 +87,80 @@ pub struct Snapshot {
     /// The content, for files that can be diffed: valid UTF-8, no NUL bytes,
     /// at most [`MAX_FILE_SIZE`]. Other files are tracked by size and time.
     pub text: Option<String>,
+    /// Block hashes of a binary file, to show where it changes next time.
+    pub blocks: Option<Blocks>,
     pub modified: Option<SystemTime>,
+    /// When `blocks` were taken.
+    pub(crate) hashed: Option<Instant>,
+}
+
+/// How much of a file [`Snapshot::take`] reads.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Read {
+    /// Size and time only.
+    Meta,
+    /// Small files' content; big ones by size and time.
+    Small,
+    /// Everything we can use, big binaries included.
+    All,
 }
 
 impl Snapshot {
-    /// Reads the file's metadata, and its content too if `read` is set.
-    fn take(path: &Path, meta: &Metadata, read: bool) -> Self {
-        Self {
-            size: meta.len(),
-            text: read.then(|| read_text(path, meta.len())).flatten(),
+    /// Reads the file's metadata, and as much content as `read` says. Given
+    /// the snapshot from `before`, also maps where a binary file changed.
+    fn take(
+        path: &Path,
+        meta: &Metadata,
+        read: Read,
+        before: Option<&Snapshot>,
+    ) -> (Self, Option<ByteMap>) {
+        let size = meta.len();
+        let mut snapshot = Self {
+            size,
             modified: meta.modified().ok(),
-        }
+            ..Self::default()
+        };
+        let old = before.and_then(|b| b.blocks.as_ref());
+        let map = match read {
+            Read::Meta => None,
+            _ if size <= MAX_FILE_SIZE => {
+                let Ok(bytes) = fs::read(path) else {
+                    return (snapshot, None);
+                };
+                snapshot.text = decode(&bytes);
+                if snapshot.text.is_some() {
+                    return (snapshot, None);
+                }
+                let (blocks, map) =
+                    bytemap::scan(&bytes[..], bytes.len() as u64, old).expect("reading memory");
+                snapshot.blocks = Some(blocks);
+                snapshot.hashed = Some(Instant::now());
+                map
+            }
+            Read::Small => None,
+            Read::All => {
+                let recent = before
+                    .and_then(|b| b.hashed)
+                    .is_some_and(|at| size > BIG_FILE && at.elapsed() < BIG_FILE_PAUSE);
+                if recent {
+                    // Drop the old hashes rather than keep them: they no
+                    // longer match this snapshot, and a map against them
+                    // would contradict the header. The next change hashes
+                    // again (if the pause is over) and the one after maps.
+                    snapshot.hashed = before.and_then(|b| b.hashed);
+                    return (snapshot, None);
+                }
+                match fs::File::open(path).and_then(|f| bytemap::scan(f, size, old)) {
+                    Ok((blocks, map)) => {
+                        snapshot.blocks = Some(blocks);
+                        snapshot.hashed = Some(Instant::now());
+                        map
+                    }
+                    Err(_) => None,
+                }
+            }
+        };
+        (snapshot, map)
     }
 
     /// Text is compared by content, so saving a file unchanged is no change.
@@ -222,7 +296,11 @@ impl State {
         // text remembered while the budget lasts.
         found.sort_by_key(|(_, meta)| std::cmp::Reverse(meta.modified().ok()));
         for (path, meta) in found {
-            let snapshot = Snapshot::take(&path, &meta, self.cached_bytes < TEXT_BUDGET);
+            let read = match self.cached_bytes < TEXT_BUDGET {
+                true => Read::Small,
+                false => Read::Meta,
+            };
+            let (snapshot, _) = Snapshot::take(&path, &meta, read, None);
             self.remember(path, snapshot);
         }
     }
@@ -243,6 +321,7 @@ impl State {
                     ChangeKind::Deleted,
                     before,
                     Snapshot::default(),
+                    None,
                 ));
             }
             return;
@@ -256,15 +335,16 @@ impl State {
         if !meta.is_file() || self.filter.is_ignored(&path, false) {
             return;
         }
-        let after = Snapshot::take(&path, &meta, true);
+        let (after, map) = Snapshot::take(&path, &meta, Read::All, self.cache.get(&path));
         match self.remember(path.clone(), after.clone()) {
             Some(before) if before.same_as(&after) => {}
-            Some(before) => emit(change(path, ChangeKind::Modified, before, after)),
+            Some(before) => emit(change(path, ChangeKind::Modified, before, after, map)),
             None => emit(change(
                 path,
                 ChangeKind::Created,
                 Snapshot::default(),
                 after,
+                None,
             )),
         }
     }
@@ -295,7 +375,7 @@ impl State {
         let mut oldest: Vec<(Option<SystemTime>, PathBuf)> = self
             .cache
             .iter()
-            .filter(|(_, s)| s.text.is_some())
+            .filter(|(_, s)| s.text.is_some() || s.blocks.is_some())
             .map(|(path, s)| (s.modified, path.clone()))
             .collect();
         oldest.sort();
@@ -303,8 +383,9 @@ impl State {
             if self.cached_bytes <= TEXT_BUDGET / 4 * 3 {
                 break;
             }
-            if let Some(text) = self.cache.get_mut(&path).and_then(|s| s.text.take()) {
-                self.cached_bytes -= text.len();
+            if let Some(s) = self.cache.get_mut(&path) {
+                self.cached_bytes -= text_len(s);
+                (s.text, s.blocks) = (None, None);
             }
         }
     }
@@ -325,31 +406,32 @@ impl State {
     }
 }
 
-fn change(path: PathBuf, kind: ChangeKind, before: Snapshot, after: Snapshot) -> Event {
-    Event::Change(Change {
+fn change(
+    path: PathBuf,
+    kind: ChangeKind,
+    before: Snapshot,
+    after: Snapshot,
+    map: Option<ByteMap>,
+) -> Event {
+    Event::Change(Box::new(Change {
         path,
         kind,
         before,
         after,
-    })
+        map,
+    }))
 }
 
+/// Memory a snapshot holds on to, for the cache budget.
 fn text_len(snapshot: &Snapshot) -> usize {
     snapshot.text.as_ref().map_or(0, String::len)
-}
-
-/// The file's content if it is small and text.
-fn read_text(path: &Path, size: u64) -> Option<String> {
-    if size > MAX_FILE_SIZE {
-        return None;
-    }
-    decode(fs::read(path).ok()?)
+        + snapshot.blocks.as_ref().map_or(0, Blocks::memory)
 }
 
 /// Text in the encodings editors actually save: UTF-8, UTF-16 with a byte
 /// order mark (Visual Studio's "Unicode"), or a legacy 8-bit code page.
 /// A NUL byte anywhere else means binary.
-fn decode(bytes: Vec<u8>) -> Option<String> {
+fn decode(bytes: &[u8]) -> Option<String> {
     let utf16 = |be: bool| {
         let units = bytes[2..].chunks(2).map(|c| match c {
             [a, b] if be => u16::from_be_bytes([*a, *b]),
@@ -368,12 +450,13 @@ fn decode(bytes: Vec<u8>) -> Option<String> {
     if bytes.contains(&0) {
         return None;
     }
-    String::from_utf8(bytes)
-        // ponytail: read as Latin-1, so Windows-1252's 0x80-0x9F (curly
-        // quotes, euro) come out as control characters; add a real code page
-        // table if that shows up.
-        .or_else(|e| Ok::<_, ()>(e.into_bytes().iter().map(|&b| b as char).collect()))
-        .ok()
+    // ponytail: anything not UTF-8 is read as Latin-1, so Windows-1252's
+    // 0x80-0x9F (curly quotes, euro) come out as control characters; add a
+    // real code page table if that shows up.
+    Some(match std::str::from_utf8(bytes) {
+        Ok(text) => text.to_owned(),
+        Err(_) => bytes.iter().map(|&b| b as char).collect(),
+    })
 }
 
 enum Batch {
@@ -414,7 +497,7 @@ mod tests {
 
     #[test]
     fn decodes_what_editors_save_and_rejects_binary() {
-        let text = |b: &[u8]| decode(b.to_vec());
+        let text = decode;
         assert_eq!(text(b"class A {}\n").as_deref(), Some("class A {}\n"));
         assert_eq!(
             text(b"\xEF\xBB\xBFclass A").as_deref(),
@@ -451,7 +534,7 @@ mod tests {
 
     fn next_change(rx: &Receiver<Event>) -> Change {
         match next(rx) {
-            Event::Change(change) => change,
+            Event::Change(change) => *change,
             other => panic!("expected a change, got {other:?}"),
         }
     }
@@ -481,6 +564,10 @@ mod tests {
         fs::write(root.join("image.bin"), [0u8, 1, 2, 3, 4]).unwrap();
         let grown = next_change(&rx);
         assert_eq!((grown.before.size, grown.after.size), (3, 5));
+        // Where it changed: three bytes kept, two added.
+        let states: Vec<_> = grown.map.unwrap().cells.iter().map(|c| c.state).collect();
+        use crate::bytemap::State::{Added, Same};
+        assert_eq!(states, [Same, Same, Same, Added, Added]);
 
         fs::create_dir(root.join("src")).unwrap();
         fs::write(root.join("src/new.rs"), "fn main() {}\n").unwrap();
@@ -556,6 +643,7 @@ mod tests {
             size: six_mib.len() as u64,
             text: Some(six_mib.clone()),
             modified: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_000 - age_secs)),
+            ..Snapshot::default()
         };
         state.remember("old".into(), file(30));
         state.remember("mid".into(), file(20));

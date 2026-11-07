@@ -6,12 +6,16 @@ use std::path::Path;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
+use crate::bytemap::{ByteMap, State};
 use crate::diff::{self, Kind};
 use crate::highlight::{Highlighter, clean};
 use crate::theme::UiColors;
 #[cfg(test)]
 use crate::watch::Snapshot;
 use crate::watch::{Change, ChangeKind};
+
+/// Everything under a header is indented this much, like Claude Code's.
+const INDENT: &str = "  ";
 
 /// Longer diffs are cut off so one huge change can't flood the screen.
 const MAX_LINES_PER_CHANGE: usize = 200;
@@ -41,43 +45,44 @@ impl Renderer {
             return Vec::new();
         }
 
-        let green = |text: String| Span::styled(text, Style::new().fg(c.added));
-        let red = |text: String| Span::styled(text, Style::new().fg(c.removed));
         let count = |hunks: &[Vec<diff::DiffLine>], kind| {
             hunks.iter().flatten().filter(|l| l.kind == kind).count()
         };
-        let mut header = vec![
-            Span::styled("▍ ", Style::new().fg(c.accent)),
+        // Like Claude Code's: what happened, the path, and the numbers in
+        // quiet parentheses.
+        let (verb, details) = match (change.kind, &hunks) {
+            (ChangeKind::Created, Some(h)) => ("Created", format!("+{}", count(h, Kind::Added))),
+            (ChangeKind::Created, None) => ("Created", size(after.size)),
+            (ChangeKind::Modified, Some(h)) => (
+                "Updated",
+                format!("+{} −{}", count(h, Kind::Added), count(h, Kind::Removed)),
+            ),
+            (ChangeKind::Modified, None) => {
+                let delta = match after.size.cmp(&before.size) {
+                    Ordering::Greater => format!("+{}", size(after.size - before.size)),
+                    Ordering::Less => format!("−{}", size(before.size - after.size)),
+                    Ordering::Equal => "±0 B".into(),
+                };
+                let sizes = format!("{} → {}, {delta}", size(before.size), size(after.size));
+                ("Updated", sizes)
+            }
+            (ChangeKind::Deleted, _) => ("Deleted", size(before.size)),
+        };
+        let header = vec![
+            Span::styled(format!("{verb} "), Style::new().fg(c.foreground)),
             Span::styled(
                 display_path(&change.path),
-                Style::new().fg(c.accent).add_modifier(Modifier::BOLD),
+                Style::new().fg(c.foreground).add_modifier(Modifier::BOLD),
             ),
-            Span::raw("  "),
+            Span::styled(format!(" ({details})"), c.muted),
         ];
-        match (change.kind, &hunks) {
-            (ChangeKind::Created, Some(h)) => {
-                header.push(green(format!("new +{}", count(h, Kind::Added))));
-            }
-            (ChangeKind::Created, None) => header.push(green(format!("new {}", size(after.size)))),
-            (ChangeKind::Modified, Some(h)) => {
-                header.push(green(format!("+{}", count(h, Kind::Added))));
-                header.push(red(format!(" −{}", count(h, Kind::Removed))));
-            }
-            (ChangeKind::Modified, None) => {
-                let sizes = format!("{} → {}  ", size(before.size), size(after.size));
-                header.push(Span::styled(sizes, c.muted));
-                header.push(match after.size.cmp(&before.size) {
-                    Ordering::Greater => green(format!("+{}", size(after.size - before.size))),
-                    Ordering::Less => red(format!("−{}", size(before.size - after.size))),
-                    Ordering::Equal => Span::styled("±0 B", c.muted),
-                });
-            }
-            (ChangeKind::Deleted, _) => header.push(red(format!("deleted {}", size(before.size)))),
-        }
 
         let mut out = vec![Line::from(header)];
         if let (Some((old, new)), Some(hunks)) = (texts, &hunks) {
             out.extend(self.body(&change.path, old, new, hunks));
+        }
+        if let Some(map) = &change.map {
+            out.extend(self.byte_map(map));
         }
         out.push(Line::default());
         out
@@ -118,7 +123,7 @@ impl Renderer {
         let mut out = Vec::new();
         for (i, hunk) in hunks.iter().enumerate() {
             if i > 0 {
-                out.push(Line::styled(format!("{:width$}  ┈┈┈", ""), c.muted));
+                out.push(Line::styled(format!("{INDENT}{:width$}  ┈┈┈", ""), c.muted));
             }
             for line in hunk {
                 let (mark, code, tint) = match line.kind {
@@ -130,7 +135,10 @@ impl Renderer {
                     true => format!("{:>w$} ", line.index + 1, w = width - 1),
                     false => String::new(),
                 };
-                let mut row = Line::from(vec![Span::styled(number, c.muted)]);
+                // The indent keeps the screen's own background, so a
+                // tinted row starts where its text does.
+                let indent = Span::styled(INDENT, Style::new().bg(c.background));
+                let mut row = Line::from(vec![indent, Span::styled(number, c.muted)]);
                 match tint {
                     // The tint fills the whole row and leaves the syntax
                     // colors on the text alone.
@@ -141,11 +149,12 @@ impl Renderer {
                             row = row.style(Style::new().bg(bg));
                         }
                     }
-                    // Bright means changed, dim means unchanged.
+                    // Unchanged lines keep their full colors: dimming them on
+                    // top of a dark palette made them unreadable, and the
+                    // tint already says what changed.
                     None => {
                         row.push_span(Span::raw("  "));
                         row.extend(code.iter().cloned());
-                        row = row.patch_style(Style::new().add_modifier(Modifier::DIM));
                     }
                 }
                 out.push(row);
@@ -154,9 +163,70 @@ impl Renderer {
         if out.len() > MAX_LINES_PER_CHANGE {
             let hidden = out.len() - MAX_LINES_PER_CHANGE;
             out.truncate(MAX_LINES_PER_CHANGE);
-            out.push(Line::styled(format!("  … {hidden} more lines"), c.muted));
+            out.push(Line::styled(
+                format!("{INDENT}  … {hidden} more lines"),
+                c.muted,
+            ));
         }
         out
+    }
+}
+
+impl Renderer {
+    /// A binary file as a bar from its start to its end, lit where it
+    /// changed, with the offset where each change starts written below.
+    fn byte_map(&self, map: &ByteMap) -> Vec<Line<'static>> {
+        let c = &self.colors;
+        let color = |state| match state {
+            State::Same => None,
+            State::Changed => Some(c.changed),
+            State::Added => Some(c.added),
+            State::Removed => Some(c.removed),
+        };
+        let mut bar = vec![Span::raw(INDENT)];
+        for cell in &map.cells {
+            bar.push(match color(cell.state) {
+                Some(fg) => Span::styled("█", Style::new().fg(fg)),
+                // How random the bytes are, as texture: the "art" of the
+                // map. Never a full block, which is what a change looks like.
+                None => Span::styled(["·", "░", "▒", "▓"][cell.texture.min(3) as usize], c.muted),
+            });
+        }
+
+        let width = map.cells.len();
+        let mut labels: Vec<(usize, String, Style)> = vec![(0, "0".into(), c.muted)];
+        let starts = map.cells.iter().enumerate().filter(|(i, cell)| {
+            cell.state != State::Same && (*i == 0 || map.cells[i - 1].state != cell.state)
+        });
+        for (i, cell) in starts {
+            let offset = match cell.state {
+                State::Added | State::Removed => map.shared,
+                _ => i as u64 * map.cell_size,
+            };
+            let text = format!("↑{}", size(offset));
+            labels.push((
+                i,
+                text,
+                Style::new().fg(color(cell.state).unwrap_or_default()),
+            ));
+        }
+        let end = size(map.len);
+        labels.push((width.saturating_sub(end.chars().count()), end, c.muted));
+        let mut axis = vec![Span::raw(INDENT)];
+        let mut column = 0;
+        for (at, text, style) in labels {
+            let len = text.chars().count();
+            // An arrow must point at its change, so labels are never moved
+            // and may run past the bar's right end; one that would touch
+            // the label before it is left out.
+            if at < column + usize::from(column > 0) {
+                continue;
+            }
+            axis.push(Span::raw(" ".repeat(at - column)));
+            axis.push(Span::styled(text, style));
+            column = at + len;
+        }
+        vec![Line::from(bar), Line::from(axis)]
     }
 }
 
@@ -232,7 +302,7 @@ mod tests {
         Snapshot {
             size,
             text: text.map(String::from),
-            modified: None,
+            ..Snapshot::default()
         }
     }
 
@@ -242,6 +312,7 @@ mod tests {
             kind,
             before: snapshot(before.len() as u64, Some(before)),
             after: snapshot(after.len() as u64, Some(after)),
+            map: None,
         }
     }
 
@@ -252,11 +323,11 @@ mod tests {
         assert_eq!(
             texts,
             [
-                "▍ /nowhere/lib.rs  +1 −1",
-                "1   a",
-                "2 - b",
-                "2 + B",
-                "3   c",
+                "Updated /nowhere/lib.rs (+1 −1)",
+                "  1   a",
+                "  2 - b",
+                "  2 + B",
+                "  3   c",
                 ""
             ]
         );
@@ -268,8 +339,10 @@ mod tests {
         let r = renderer();
         let added = &r.render(&modified)[3];
         assert_eq!(added.style.bg, Some(r.colors.added_bg));
-        // The syntax colors stay on the text.
-        assert!(added.spans.iter().all(|s| s.style.bg.is_none()));
+        // The syntax colors stay on the text, and the indent keeps the
+        // screen's background so the tint starts where the text does.
+        assert_eq!(added.spans[0].style.bg, Some(r.colors.background));
+        assert!(added.spans[1..].iter().all(|s| s.style.bg.is_none()));
 
         let r = Renderer {
             line_numbers: false,
@@ -278,8 +351,28 @@ mod tests {
         };
         let lines = r.render(&modified);
         let texts: Vec<String> = lines.iter().map(text).collect();
-        assert_eq!(texts, ["▍ /nowhere/lib.rs  +1 −1", "  a", "- b", "+ B", ""]);
+        assert_eq!(
+            texts,
+            [
+                "Updated /nowhere/lib.rs (+1 −1)",
+                "    a",
+                "  - b",
+                "  + B",
+                ""
+            ]
+        );
         assert_eq!(lines[3].style.bg, None);
+    }
+
+    #[test]
+    fn progress_bar_output_with_lone_carriage_returns_renders() {
+        // A log that redraws a progress bar with `\r`, as tool output does.
+        let before = "start\n10%\r20%\n";
+        let after = "start\n10%\r20%\r30%\n";
+        let lines = renderer().render(&change(ChangeKind::Modified, before, after));
+        let texts: Vec<String> = lines.iter().map(text).collect();
+        assert_eq!(texts[2], "  2 - 10%␍20%");
+        assert_eq!(texts[3], "  2 + 10%␍20%␍30%");
     }
 
     #[test]
@@ -290,7 +383,7 @@ mod tests {
                 .is_empty()
         );
         let deleted = r.render(&change(ChangeKind::Deleted, "a\n", ""));
-        assert_eq!(text(&deleted[0]), "▍ /nowhere/lib.rs  deleted 2 B");
+        assert_eq!(text(&deleted[0]), "Deleted /nowhere/lib.rs (2 B)");
         assert_eq!(deleted.len(), 2);
     }
 
@@ -300,7 +393,7 @@ mod tests {
         let lines = renderer().render(&change(ChangeKind::Created, "", &after));
         // header + capped body + "more" note + spacer
         assert_eq!(lines.len(), 1 + MAX_LINES_PER_CHANGE + 1 + 1);
-        assert_eq!(text(&lines[lines.len() - 2]), "  … 300 more lines");
+        assert_eq!(text(&lines[lines.len() - 2]), "    … 300 more lines");
     }
 
     #[test]
@@ -311,21 +404,49 @@ mod tests {
             kind: ChangeKind::Modified,
             before: snapshot(before, None),
             after: snapshot(after, None),
+            map: None,
         };
         let lines = r.render(&binary(12 * 1024, 14 * 1024 + 100));
         assert_eq!(
             text(&lines[0]),
-            "▍ /nowhere/logo.png  12.0 KiB → 14.1 KiB  +2.10 KiB"
+            "Updated /nowhere/logo.png (12.0 KiB → 14.1 KiB, +2.10 KiB)"
         );
         assert_eq!(lines.len(), 2);
         let shrunk = r.render(&binary(2048, 1000));
-        assert!(text(&shrunk[0]).ends_with("2.00 KiB → 1000 B  −1.02 KiB"));
+        assert!(text(&shrunk[0]).ends_with("(2.00 KiB → 1000 B, −1.02 KiB)"));
 
         let mut created = binary(0, 3 << 20);
         created.kind = ChangeKind::Created;
         assert_eq!(
             text(&r.render(&created)[0]),
-            "▍ /nowhere/logo.png  new 3.00 MiB"
+            "Created /nowhere/logo.png (3.00 MiB)"
+        );
+    }
+
+    #[test]
+    fn binary_changes_draw_a_map_with_offsets() {
+        use crate::bytemap::Cell;
+        let cell = |state, texture| Cell { state, texture };
+        let mut cells = vec![cell(State::Same, 1); 40];
+        cells[10] = cell(State::Changed, 1);
+        cells[11] = cell(State::Changed, 1);
+        cells[36..].fill(cell(State::Added, 0));
+        let mut change = change(ChangeKind::Modified, "", "");
+        (change.before.text, change.after.text) = (None, None);
+        change.map = Some(ByteMap {
+            cells,
+            cell_size: 1024,
+            len: 40 * 1024,
+            shared: 36 * 1024 - 100,
+        });
+        let lines = renderer().render(&change);
+        let bar = format!("  {}██{}████", "░".repeat(10), "░".repeat(24));
+        assert_eq!(text(&lines[1]), bar);
+        // `0`, where each change starts, and the size; the size doesn't fit
+        // next to the last label, so it's left out rather than overlapping.
+        assert_eq!(
+            text(&lines[2]),
+            format!("  0{}↑10.0 KiB{}↑35.9 KiB", " ".repeat(9), " ".repeat(17))
         );
     }
 
