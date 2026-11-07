@@ -13,8 +13,9 @@ pub struct Args {
     pub paths: Vec<PathBuf>,
 
     /// Theme name or path to a .tmTheme / base16 .yaml file. The default,
-    /// `ansi`, uses your terminal's own palette and follows it live.
-    #[arg(short, long, default_value = "ansi")]
+    /// `claude`, looks like Claude Code's diffs; `ansi` uses your terminal's
+    /// own palette and follows it live.
+    #[arg(short, long, default_value = "claude")]
     pub theme: String,
 
     /// Print every available theme name and exit.

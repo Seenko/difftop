@@ -124,13 +124,25 @@ feed marks the switch. What's already on screen stays.
 
 ## Themes
 
-The default theme is **`ansi`**. It colors everything with your terminal's own
-16-color palette, so it matches your shell theme automatically and follows it
-live when you switch terminal themes.
+The default theme is **`claude`**, which draws diffs the way Claude Code's
+dark theme does:
+- **Code:** Monokai colors.
+- **Changed rows:** dark green and red backgrounds, with the line number and
+  `+`/`-` in green or red.
+- **Changed words:** a brighter background behind the words that changed in
+  a line.
+- **New files:** shown as plain code under a `Wrote 12 lines to …` header.
+
+Like Claude Code, it uses exact row colors only when `COLORTERM` says the
+terminal shows true color, and the nearest of the 256 colors otherwise.
 
 To choose a different theme, run `difftop --list-themes` and pass a name with
 `--theme`. Case and punctuation don't matter, so `solarized-dark` finds
-`Solarized (dark)`. Besides `ansi` you can use:
+`Solarized (dark)`. Besides `claude` you can use:
+
+- **`ansi`**, which colors everything with your terminal's own 16-color
+  palette, so it matches your shell theme and follows it live when you
+  switch terminal themes.
 
 - **`matrix`**, green CRT phosphor on near-black. Everything is a shade of
   green, removed lines are a dimmer green than added ones, and the screen

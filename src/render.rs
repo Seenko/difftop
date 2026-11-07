@@ -1,6 +1,8 @@
 //! Turns a [`Change`] into the terminal lines that rise up the screen.
 
 use std::cmp::Ordering;
+use std::collections::HashMap;
+use std::ops::Range;
 use std::path::Path;
 
 use ratatui::style::{Color, Modifier, Style};
@@ -8,7 +10,7 @@ use ratatui::text::{Line, Span};
 
 use crate::bytemap::{ByteMap, State};
 use crate::diff::{self, Kind};
-use crate::highlight::{Highlighter, clean};
+use crate::highlight::{Highlighter, StyledLine, clean};
 use crate::theme::{self, UiColors};
 #[cfg(test)]
 use crate::watch::Snapshot;
@@ -68,21 +70,31 @@ impl Renderer {
             }
             (ChangeKind::Deleted, _) => ("Deleted", size(before.size)),
         };
-        let header = vec![
-            Span::styled(format!("{verb} "), Style::new().fg(c.foreground)),
-            Span::styled(
-                display_path(&change.path),
-                Style::new().fg(c.foreground).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(format!(" ({details})"), c.muted),
-        ];
+        let plain = Style::new().fg(c.foreground);
+        let bold = plain.add_modifier(Modifier::BOLD);
+        let path = Span::styled(display_path(&change.path), bold);
+        let header = match (change.kind, &hunks) {
+            // A new text file reads like Claude Code's "Wrote 12 lines to …".
+            (ChangeKind::Created, Some(h)) => {
+                let n = count(h, Kind::Added);
+                let lines = if n == 1 { " line to " } else { " lines to " };
+                vec![
+                    Span::styled("Wrote ", plain),
+                    Span::styled(n.to_string(), bold),
+                    Span::styled(lines, plain),
+                    path,
+                ]
+            }
+            _ => vec![
+                Span::styled(format!("{verb} "), plain),
+                path,
+                Span::styled(format!(" ({details})"), c.muted),
+            ],
+        };
 
         let mut out = vec![Line::from(header)];
         if let (Some((old, new)), Some(hunks)) = (texts, &hunks) {
-            // A new file is all additions: tinting every line says nothing
-            // and floods the screen with green, so only edits are tinted.
-            let tinted = self.change_background && change.kind == ChangeKind::Modified;
-            out.extend(self.body(&change.path, old, new, hunks, tinted));
+            out.extend(self.body(&change.path, old, new, hunks, change.kind));
         }
         if let Some(map) = &change.map {
             out.extend(self.byte_map(map));
@@ -97,8 +109,13 @@ impl Renderer {
         old: &str,
         new: &str,
         hunks: &[Vec<diff::DiffLine>],
-        tinted: bool,
+        kind: ChangeKind,
     ) -> Vec<Line<'static>> {
+        // A new file is shown like Claude Code shows a written file: its
+        // code, without marks or tint. Every line is new, so marking them
+        // would say nothing and flood the screen with green.
+        let created = kind == ChangeKind::Created;
+        let tinted = self.change_background && !created;
         let c = &self.colors;
         let last_new = hunks
             .iter()
@@ -129,12 +146,26 @@ impl Renderer {
             if i > 0 {
                 out.push(Line::styled(format!("{INDENT}{:width$}  ┈┈┈", ""), c.muted));
             }
+            let words = if tinted {
+                word_marks(hunk, &old_lines, &new_lines)
+            } else {
+                HashMap::new()
+            };
             for line in hunk {
                 let (mark, code, tint) = match line.kind {
-                    Kind::Added => ("+", &new_lines[line.index], Some((c.added, c.added_bg))),
-                    Kind::Removed => ("-", &old_lines[line.index], Some((c.removed, c.removed_bg))),
+                    Kind::Added => (
+                        "+",
+                        &new_lines[line.index],
+                        Some((c.added_mark, c.added_bg, c.added_word_bg)),
+                    ),
+                    Kind::Removed => (
+                        "-",
+                        &old_lines[line.index],
+                        Some((c.removed_mark, c.removed_bg, c.removed_word_bg)),
+                    ),
                     Kind::Context => (" ", &new_lines[line.index], None),
                 };
+                let tint = tint.filter(|_| !created);
                 let number = match self.line_numbers {
                     true => format!("{:>w$} ", line.index + 1, w = width - 1),
                     false => String::new(),
@@ -146,23 +177,30 @@ impl Renderer {
                 match tint {
                     // The tint fills the whole row and leaves the syntax
                     // colors on the text alone.
-                    Some((fg, bg)) if tinted => {
+                    Some((fg, bg, word_bg)) if tinted => {
                         // On the tint, a syntax color close to it (green text
                         // on green) becomes the normal text color instead.
                         let readable = |color: Color| match theme::readable_on(color, bg) {
                             true => color,
                             false => c.foreground,
                         };
-                        let mark = Span::styled(format!("{mark} "), Style::new().fg(readable(fg)));
-                        row.push_span(mark);
-                        row.extend(code.iter().map(|span| {
+                        // Like Claude Code: the line number takes the mark's
+                        // color too.
+                        let mark_style = Style::new().fg(readable(fg));
+                        row.spans[1].style = mark_style;
+                        row.push_span(Span::styled(format!("{mark} "), mark_style));
+                        let code = code.iter().map(|span| {
                             let mut span = span.clone();
                             span.style.fg = span.style.fg.map(readable);
                             span
-                        }));
+                        });
+                        match words.get(&(line.kind, line.index)) {
+                            Some(ranges) => row.extend(mark_words(code, ranges, word_bg)),
+                            None => row.extend(code),
+                        }
                         row = row.style(Style::new().bg(bg));
                     }
-                    Some((fg, _)) => {
+                    Some((fg, _, _)) => {
                         row.push_span(Span::styled(format!("{mark} "), Style::new().fg(fg)));
                         row.extend(code.iter().cloned());
                     }
@@ -245,6 +283,79 @@ impl Renderer {
         }
         vec![Line::from(bar), Line::from(axis)]
     }
+}
+
+/// For each changed line paired with its counterpart (removed lines with
+/// the added lines that follow them, in order), the byte ranges of the
+/// words that changed, keyed by kind and line index.
+fn word_marks(
+    hunk: &[diff::DiffLine],
+    old_lines: &[StyledLine],
+    new_lines: &[StyledLine],
+) -> HashMap<(Kind, usize), Vec<Range<usize>>> {
+    let text = |line: &StyledLine| line.iter().map(|s| s.content.as_ref()).collect::<String>();
+    let mut marks = HashMap::new();
+    let mut i = 0;
+    while i < hunk.len() {
+        let removed: Vec<_> = hunk[i..]
+            .iter()
+            .take_while(|l| l.kind == Kind::Removed)
+            .collect();
+        let added: Vec<_> = hunk[i + removed.len()..]
+            .iter()
+            .take_while(|l| l.kind == Kind::Added)
+            .collect();
+        for (old, new) in removed.iter().zip(&added) {
+            let (before, after) = (text(&old_lines[old.index]), text(&new_lines[new.index]));
+            if let Some((gone, came)) = diff::changed_words(&before, &after) {
+                marks.insert((Kind::Removed, old.index), gone);
+                marks.insert((Kind::Added, new.index), came);
+            }
+        }
+        i += (removed.len() + added.len()).max(1);
+    }
+    marks
+}
+
+/// Gives the text in `ranges` (byte offsets into the whole line) the
+/// background `bg`, splitting spans where a range starts or ends.
+fn mark_words(
+    spans: impl Iterator<Item = Span<'static>>,
+    ranges: &[Range<usize>],
+    bg: Color,
+) -> Vec<Span<'static>> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    for span in spans {
+        let text = span.content.to_string();
+        let end = at + text.len();
+        // Cut points inside this span: range borders, at char boundaries.
+        let mut cuts: Vec<usize> = ranges
+            .iter()
+            .flat_map(|r| [r.start, r.end])
+            .filter(|&p| p > at && p < end)
+            .map(|p| p - at)
+            .filter(|&p| text.is_char_boundary(p))
+            .collect();
+        cuts.sort_unstable();
+        cuts.dedup();
+        let mut from = 0;
+        for to in cuts.into_iter().chain([text.len()]) {
+            let piece = &text[from..to];
+            let inside = ranges.iter().any(|r| r.contains(&(at + from)));
+            let style = if inside {
+                span.style.bg(bg)
+            } else {
+                span.style
+            };
+            if !piece.is_empty() {
+                out.push(Span::styled(piece.to_string(), style));
+            }
+            from = to;
+        }
+        at = end;
+    }
+    out
 }
 
 /// A byte count for people, to three significant digits so that nearby
@@ -402,10 +513,56 @@ mod tests {
         let mark = added.spans.iter().find(|s| s.content == "+ ").unwrap();
         assert_eq!(mark.style.fg, Some(r.colors.foreground));
 
+        // A new file: Claude Code's "Wrote" header, plain code, no marks.
         let created = r.render(&change(ChangeKind::Created, "", "a\nb\n"));
+        assert_eq!(text(&created[0]), "Wrote 2 lines to /nowhere/lib.rs");
         assert!(created.iter().all(|l| l.style.bg.is_none()));
-        let mark = created[1].spans.iter().find(|s| s.content == "+ ").unwrap();
-        assert_eq!(mark.style.fg, Some(r.colors.added));
+        assert_eq!(text(&created[1]), "  1   a");
+        assert!(created[1].spans.iter().all(|s| s.content != "+ "));
+    }
+
+    #[test]
+    fn claude_theme_colors_line_numbers_and_marks_changed_words() {
+        let theme = crate::theme::load("claude").unwrap();
+        let r = Renderer {
+            colors: UiColors::from_theme(&theme),
+            highlighter: Highlighter::new(theme),
+            ..renderer()
+        };
+        let lines = r.render(&change(
+            ChangeKind::Modified,
+            "let x = foo(bar);\n",
+            "let x = foo(baz);\n",
+        ));
+        let (removed, added) = (&lines[1], &lines[2]);
+        // Line number and mark in the mark color, on the row's tint.
+        assert_eq!(added.spans[1].style.fg, Some(r.colors.added_mark));
+        assert_eq!(removed.spans[1].style.fg, Some(r.colors.removed_mark));
+        assert_eq!(added.style.bg, Some(r.colors.added_bg));
+        // Only the changed word gets the brighter background.
+        let marked: String = added
+            .spans
+            .iter()
+            .filter(|s| s.style.bg == Some(r.colors.added_word_bg))
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(marked, "baz");
+        assert_eq!(r.colors.background, Color::Reset);
+    }
+
+    #[test]
+    fn mark_words_splits_spans_at_range_borders() {
+        let spans = vec![Span::raw("ab"), Span::raw("cdef")];
+        let ranges = vec![Range { start: 1, end: 3 }];
+        let out = mark_words(spans.into_iter(), &ranges, Color::Red);
+        let pieces: Vec<(&str, bool)> = out
+            .iter()
+            .map(|s| (s.content.as_ref(), s.style.bg == Some(Color::Red)))
+            .collect();
+        assert_eq!(
+            pieces,
+            [("a", false), ("b", true), ("c", true), ("def", false)]
+        );
     }
 
     #[test]
