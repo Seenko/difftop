@@ -30,6 +30,10 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- difftop no longer crashes on text files with lone carriage returns, such
+  as logs with progress bars. Those `\r` are now shown as `␍` instead of
+  disappearing.
+
 - The built-in shell no longer hangs when the shell's config prints something
   without a final newline, such as fastfetch.
 - Text files saved as UTF-16 (Visual Studio's "Unicode") or in a legacy

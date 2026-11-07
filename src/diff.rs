@@ -20,7 +20,15 @@ pub struct DiffLine {
 
 /// Groups of nearby changes, each padded with up to `context` unchanged lines.
 pub fn hunks(old: &str, new: &str, context: usize) -> Vec<Vec<DiffLine>> {
-    let diff = TextDiff::from_lines(old, new);
+    // Lines end at `\n` only, exactly as the highlighter splits them, so a
+    // line's index finds the same line there. `from_lines` also ends lines
+    // at a lone `\r` (progress bars in logs), which made the indexes run
+    // past the highlighted lines and crashed the renderer.
+    let (old, new): (Vec<&str>, Vec<&str>) = (
+        old.split_inclusive('\n').collect(),
+        new.split_inclusive('\n').collect(),
+    );
+    let diff = TextDiff::from_slices(&old, &new);
     diff.grouped_ops(context)
         .iter()
         .map(|group| {
@@ -72,6 +80,13 @@ mod tests {
         let old: String = (0..20).map(|i| format!("{i}\n")).collect();
         let new = old.replace("2\n", "two\n").replace("17\n", "seventeen\n");
         assert_eq!(hunks(&old, &new, 2).len(), 2);
+    }
+
+    #[test]
+    fn lone_carriage_returns_stay_inside_their_line() {
+        // One line each side, the same count the highlighter sees.
+        let h = hunks("a\rb\n", "a\rb\rc\n", 0);
+        assert_eq!(kinds(&h[0]), [(Removed, 0), (Added, 0)]);
     }
 
     #[test]
