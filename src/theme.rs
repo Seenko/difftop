@@ -4,11 +4,13 @@
 //! 1. a path to a `.tmTheme` or base16/base24 `.yaml` file,
 //! 2. a file in the user theme folder (`~/.config/difftop/themes`, searched
 //!    recursively, matched by file name without extension),
-//! 3. the themes bundled from bat via two-face (`ansi`, `Dracula`, `Nord`, ...).
+//! 3. the themes built in: `matrix`, and those bundled from bat via two-face
+//!    (`ansi`, `Dracula`, `Nord`, ...).
 //!
 //! Names are matched loosely: case, spaces, dashes, dots, underscores and
 //! parentheses are ignored, so `solarized-dark` finds `Solarized (dark)`.
 
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
@@ -21,6 +23,9 @@ use syntect::highlighting::{
 use syntect::parsing::Scope;
 use two_face::theme::EmbeddedLazyThemeSet;
 
+const MATRIX_NAME: &str = "matrix";
+const MATRIX: &str = include_str!("../themes/matrix.tmTheme");
+
 pub fn load(name: &str) -> Result<Theme> {
     let path = Path::new(name);
     if path.is_file() {
@@ -28,6 +33,10 @@ pub fn load(name: &str) -> Result<Theme> {
     }
     if let Some(file) = user_themes().into_iter().find(|p| loose_eq(&stem(p), name)) {
         return load_file(&file);
+    }
+    if loose_eq(MATRIX_NAME, name) {
+        return ThemeSet::load_from_reader(&mut Cursor::new(MATRIX))
+            .context("reading the built-in matrix theme");
     }
     let set = two_face::theme::extra();
     for &embedded in EmbeddedLazyThemeSet::theme_names() {
@@ -44,8 +53,17 @@ pub fn names() -> Vec<String> {
         .iter()
         .map(|t| t.as_name().to_string());
     bundled
+        .chain(std::iter::once(MATRIX_NAME.to_string()))
         .chain(user_themes().iter().map(|p| stem(p)))
         .collect()
+}
+
+/// Whether a theme gets the CRT flicker. Going by the name inside the theme
+/// means a user's own file called `matrix` that replaces ours doesn't.
+// ponytail: a hard-coded name, since theme files have no field for effects;
+// make it a list or a setting if a second theme ever wants it.
+pub fn flickers(theme: &Theme) -> bool {
+    theme.name.as_deref() == Some("Matrix")
 }
 
 fn load_file(path: &Path) -> Result<Theme> {
@@ -352,6 +370,26 @@ palette:
             assert_ne!(ui.accent, ui.added, "{name}");
             assert_ne!(ui.accent, ui.removed, "{name}");
         }
+    }
+
+    #[test]
+    fn matrix_is_green_all_the_way_through() {
+        let theme = load("Matrix").unwrap();
+        // Strict enough to reject yellow-greens and near-white mints.
+        let green = |c: SynColor| c.g / 2 >= c.r && c.g / 2 >= c.b;
+        assert!(green(theme.settings.foreground.unwrap()));
+        assert!(green(theme.settings.background.unwrap()));
+        for item in &theme.scopes {
+            assert!(green(item.style.foreground.unwrap()), "{:?}", item.scope);
+        }
+        assert!(names().iter().any(|n| n == "matrix"));
+    }
+
+    #[test]
+    fn only_matrix_flickers() {
+        assert!(flickers(&load("matrix").unwrap()));
+        assert!(!flickers(&load("ansi").unwrap()));
+        assert!(!flickers(&load("Dracula").unwrap()));
     }
 
     #[test]

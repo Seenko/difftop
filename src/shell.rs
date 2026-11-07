@@ -27,6 +27,12 @@ use rustix::termios::{self, LocalModes, OptionalActions, Winsize};
 /// Printed by the shell once it has loaded and is waiting for a command.
 const READY: &str = "\x1b]6973;ready\x07";
 
+/// Matches at the end of the line because shell config that prints without a
+/// final newline (fastfetch ends on a color reset) leaves text in front of it.
+fn is_ready(line: &str) -> bool {
+    line.ends_with(READY)
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Output {
     /// The shell is loaded and waiting; this is its prompt, color codes and all.
@@ -103,7 +109,7 @@ impl Shell {
             while reader.read_until(b'\n', &mut buf).is_ok_and(|n| n > 0) {
                 let text = String::from_utf8_lossy(&buf);
                 let line = text.trim_end_matches(['\n', '\r']);
-                if line == READY {
+                if is_ready(line) {
                     ready = true;
                     let prompt = std::fs::read_to_string(&prompt_file).unwrap_or_default();
                     on_output(Output::Ready(prompt));
@@ -189,6 +195,14 @@ mod tests {
     use super::*;
     use std::sync::mpsc::{self, Receiver};
     use std::time::Duration;
+
+    #[test]
+    fn ready_marker_survives_unterminated_config_output() {
+        assert!(is_ready(READY));
+        assert!(is_ready(&format!("\x1b[m{READY}")));
+        assert!(!is_ready("just some output"));
+        assert!(!is_ready(&format!("{READY} and more")));
+    }
 
     /// Starts a shell and waits until it's ready.
     fn start(cwd: &Path) -> (Shell, Receiver<Output>) {
