@@ -15,6 +15,8 @@ uses [Semantic Versioning](https://semver.org/).
 
 - The built-in shell no longer hangs when the shell's config prints something
   without a final newline, such as fastfetch.
+- Text files saved as UTF-16 (Visual Studio's "Unicode") or in a legacy
+  code page like Windows-1252 are diffed again instead of shown as binary.
 
 ## [0.2.0] - 2026-09-29
 
