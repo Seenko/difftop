@@ -46,7 +46,7 @@ head -c 12000 /dev/zero > "$project/assets/logo.png"
 # don't depend on freeze's ANSI palette.
 start() {
     tmux kill-session -t "$session" 2>/dev/null || true
-    tmux new-session -d -s "$session" -x 96 -y "$1" -c "$project" \
+    tmux new-session -d -s "$session" -x 80 -y "$1" -c "$project" \
         env -i HOME="$home" PATH="$PATH" TERM=xterm-256color COLORTERM=truecolor \
         SHELL=/bin/bash "$bin"
     sleep 1.5
@@ -57,9 +57,11 @@ run() {
     tmux send-keys -t "$session" Enter
     sleep 1
 }
-# Saves what's on screen as docs/screenshots/<name>.png.
+# Saves what's on screen as docs/screenshots/<name>.png. New lines enter at
+# the bottom, so the empty rows above the first one are left out.
 shot() {
-    tmux capture-pane -t "$session" -p -e > "$demo/$1.ansi"
+    tmux capture-pane -t "$session" -p -e |
+        perl -ne '$seen ||= (s/\e\[[0-9;]*m//gr =~ /\S/); print if $seen' > "$demo/$1.ansi"
     freeze "$demo/$1.ansi" --language ansi --window --padding 20 --margin 0 \
         --border.radius 8 --background '#1a1a1a' --output "$out/$1.png" \
         < /dev/null > /dev/null # freeze waits on a non-terminal stdin otherwise
@@ -100,3 +102,17 @@ sleep 1.5
 run 'cd src && ls'
 sleep 1
 shot shell
+
+# 3. A binary file: where it changed, and how it grew. Made before difftop
+# starts, so the startup scan knows its blocks and the first change is mapped.
+db="$project/assets/app.db"
+{
+    head -c 250000 /dev/zero
+    head -c 300000 /dev/urandom
+    perl -e 'print "id,name,email\n" x 14000'
+} > "$db"
+start 8
+dd if=/dev/urandom of="$db" bs=4096 count=6 seek=110 conv=notrunc status=none
+head -c 150000 /dev/urandom >> "$db"
+sleep 2
+shot binary

@@ -82,14 +82,10 @@ What gets watched:
   get a bar that stands for the whole file, from its start on the left to
   its end on the right. It lights up where bytes changed (yellow), where
   the file grew (green) or where it was cut off (red), with the offset of
-  each change below it. Unchanged parts show a texture: `·` for empty
-  space, up to `▓` for compressed or random data.
+  each change below it. Unchanged parts show a texture: dots for empty
+  space, denser shading for compressed or random data.
 
-  ```
-  Updated app.db (5.23 MiB → 5.81 MiB, +600 KiB)
-    ▓························▓▓▓▓▓▓███▓▓▓▓▓▓▓▓░░████
-    0                              ↑3.76 MiB    ↑5.23 MiB
-  ```
+  ![A binary file's bar: empty space as dots, data as shading, an edit in yellow and growth in green](docs/screenshots/binary.png)
 
   The bar works for files of any size: difftop keeps only 48 hashes per
   file, never the bytes, and hashes a 1 GiB file in about 0.2 s. Binary
