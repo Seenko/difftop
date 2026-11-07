@@ -50,7 +50,7 @@ jobs:
         run: |
           version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
           test "$GITHUB_REF_NAME" = "v$version" || { echo "tag $GITHUB_REF_NAME != Cargo.toml v$version"; exit 1; }
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           merge-multiple: true
       - run: gh release create "$GITHUB_REF_NAME" --generate-notes difftop-*
