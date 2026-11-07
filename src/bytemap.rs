@@ -104,18 +104,27 @@ pub fn scan(
     let blocks = own.finish(len);
     let map = before.zip(old_borders).map(|(before, b)| {
         let shared = before.len.min(len);
-        let changed: Vec<bool> = b
+        let mut changed: Vec<bool> = b
             .finish(shared)
             .hashes
             .iter()
             .zip(&before.hashes)
             .map(|(a, b)| a != b)
             .collect();
+        // The block a cut goes through always hashes differently, since only
+        // part of it is left.
+        // ponytail: so an edit inside that one block isn't seen; finer
+        // blocks around the end would catch it.
+        if len < before.len && !shared.is_multiple_of(before.size) {
+            changed[(shared / before.size) as usize] = false;
+        }
         let full = before.len.max(len);
         let cells = (0..full.div_ceil(cell_size))
             .map(|i| {
                 let (start, end) = (i * cell_size, ((i + 1) * cell_size).min(full));
-                let state = if start >= shared {
+                // The cell where the file now ends is part of the growth or
+                // the cut, so its label gives the exact offset.
+                let state = if start >= shared || (end > shared && len != before.len) {
                     if len > before.len {
                         State::Added
                     } else {
@@ -358,6 +367,14 @@ mod tests {
             states(&compare(&before, cut)),
             ".".repeat(24) + &"-".repeat(24)
         );
+    }
+
+    #[test]
+    fn a_cut_through_a_block_is_a_cut_not_a_change() {
+        let before = file(4800);
+        let map = compare(&before, &before[..2450]);
+        assert_eq!(states(&map), ".".repeat(24) + &"-".repeat(24));
+        assert_eq!(map.shared, 2450);
     }
 
     #[test]

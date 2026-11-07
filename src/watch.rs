@@ -143,10 +143,11 @@ impl Snapshot {
                     .and_then(|b| b.hashed)
                     .is_some_and(|at| size > BIG_FILE && at.elapsed() < BIG_FILE_PAUSE);
                 if recent {
-                    // Keep the older hashes: the next map covers both changes.
-                    let before = before.expect("recent implies before");
-                    snapshot.blocks = before.blocks.clone();
-                    snapshot.hashed = before.hashed;
+                    // Drop the old hashes rather than keep them: they no
+                    // longer match this snapshot, and a map against them
+                    // would contradict the header. The next change hashes
+                    // again (if the pause is over) and the one after maps.
+                    snapshot.hashed = before.and_then(|b| b.hashed);
                     return (snapshot, None);
                 }
                 match fs::File::open(path).and_then(|f| bytemap::scan(f, size, old)) {
